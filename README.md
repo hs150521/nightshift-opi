@@ -9,21 +9,21 @@ Orange Pi 3B 2G control service for the Nightshift desktop agent host.
 - **Light sensor (EBF26040003)**
   - Pin 1 (3.3V) -> VCC
   - Pin 6 (GND) -> GND
-  - Pin 7 (GPIO3_C6) -> digital output
+  - Pin 7 (GPIO4_A4) -> digital output
 
-- **T5AI-BOARD UART**
-  - Pin 14 (GND) -> T5 GND (Pin 10)
-  - Pin 3 (GPIO3_C4, UART7_RX) -> T5 TX (Pin 17)
-  - Pin 5 (GPIO3_C5, UART7_TX) -> T5 RX (Pin 18)
+- **T5AI-BOARD UART (T5 P11 header)**
+  - Pin 14 (GND)                 -> T5 P11 Pin 13 or 17 (GND)
+  - Pin 15 (GPIO4_A2, UART7_TX) -> T5 P11 Pin 18 (P01, UART1_RX)
+  - Pin 16 (GPIO4_A3, UART7_RX) -> T5 P11 Pin 10 (P00, UART1_TX)
 
-> **Previous wiring (Pin 15/16) was invalid:** Orange Pi 3B pins 15/16 are GPIO3_D4/D5 and have no UART function. The `rk3568-uart7-m1` overlay has been enabled so UART7 is available on pins 3/5.
+> **Why `uart7-m2`:** Orange Pi 3B maps UART7 to physical pins 15/16 via the `uart7m2` pinmux (GPIO4_A2/A3). Other overlays such as `uart7-m1` place UART7 on different pins and will not work with this wiring.
 
 ## Required overlay
 
-`/boot/extlinux/extlinux.conf` already contains:
+`/boot/extlinux/extlinux.conf` contains:
 
 ```text
-fdtoverlays /lib/firmware/5.10.0-1012-rockchip/device-tree/rockchip/overlay/rk3568-uart7-m1.dtbo
+fdtoverlays /lib/firmware/5.10.0-1012-rockchip/device-tree/rockchip/overlay/rk3568-uart7-m2.dtbo
 ```
 
 Reboot for the overlay to take effect:

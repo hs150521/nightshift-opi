@@ -28,8 +28,8 @@ def load_config(env_path: str | None = None) -> AppConfig:
         {
             "stabilization_ms": int(os.getenv("NIGHTSHIFT_GPIO_STABILIZATION_MS", "2000")),
             "light": {
-                "chip": os.getenv("NIGHTSHIFT_GPIO_LIGHT_CHIP", "gpiochip3"),
-                "line": int(os.getenv("NIGHTSHIFT_GPIO_LIGHT_LINE", "22")),
+                "chip": os.getenv("NIGHTSHIFT_GPIO_LIGHT_CHIP", "gpiochip4"),
+                "line": int(os.getenv("NIGHTSHIFT_GPIO_LIGHT_LINE", "4")),
                 "active_low": os.getenv("NIGHTSHIFT_GPIO_LIGHT_ACTIVE_LOW", "false").lower()
                 == "true",
                 "rising_debounce_ms": int(os.getenv("NIGHTSHIFT_GPIO_LIGHT_RISING_MS", "1000")),

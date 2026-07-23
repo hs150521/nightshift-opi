@@ -48,9 +48,9 @@ No mocks or stubs are kept in the production code for these items; they are inte
 ## Completed / in progress
 
 - [x] Correct target board to Orange Pi 3B 2G.
-- [x] Enable `rk3568-uart7-m1` overlay in `/boot/extlinux/extlinux.conf`.
+- [x] Enable `rk3568-uart7-m2` overlay in `/boot/extlinux/extlinux.conf`.
 - [ ] Reboot so `/dev/ttyS7` appears.
-- [ ] Rewire T5 UART from Pin 15/16 to Pin 3/5 (GND can stay on Pin 14).
-- [ ] Verify `gpiochip3 line 22` (GPIO3_C6) maps to Pin 7 and the light sensor active level.
+- [ ] Verify `gpiochip4 line 4` (GPIO4_A4) maps to Pin 7 and the light sensor active level.
+- [ ] Verify UART7 wiring: OPI Pin15 -> T5 P11 Pin18 (UART1_RX), OPI Pin16 -> T5 P11 Pin10 (UART1_TX), GND -> T5 P11 Pin13/17.
 - [ ] Power on and run a smoke test: light on -> IDLE (warm), light off -> NIGHT_EXEC (blue).
 - [ ] Wire pressure sensor and enable `NIGHTSHIFT_GPIO_SIT_ENABLED`.

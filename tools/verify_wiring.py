@@ -30,9 +30,8 @@ def check_uart() -> None:
 
     if not Path("/dev/ttyS7").exists():
         print("\nWARNING: /dev/ttyS7 is missing.")
-        print("  1. Confirm rk3568-uart7-m1 overlay is enabled in /boot/extlinux/extlinux.conf.")
+        print("  1. Confirm rk3568-uart7-m2 overlay is enabled in /boot/extlinux/extlinux.conf.")
         print("  2. Reboot the board.")
-        print("  3. Rewire T5 TX/RX to Orange Pi 3B Pin 3/5.")
     else:
         print("\nOK: /dev/ttyS7 is present.")
 
@@ -42,10 +41,12 @@ def check_gpio() -> None:
     print(run(["gpioinfo"]))
 
     print("\n=== Expected wiring ===")
-    print("Light sensor -> Pin 7 = gpiochip3 line 22 (GPIO3_C6)")
-    print("T5 GND       -> Pin 14 (GND)")
-    print("T5 TX        -> Pin 3  = gpiochip3 line 20 (GPIO3_C4, UART7_RX)")
-    print("T5 RX        -> Pin 5  = gpiochip3 line 21 (GPIO3_C5, UART7_TX)")
+    print("Light sensor -> Pin 7 = gpiochip4 line 4 (GPIO4_A4)")
+    print("T5 GND       -> Pin 14 (GND) -> T5 P11 Pin 13 or 17")
+    print("T5 TX        -> Pin 16 = gpiochip4 line 3 (GPIO4_A3, UART7_RX)")
+    print("                -> T5 P11 Pin 10 (P00, UART1_TX)")
+    print("T5 RX        -> Pin 15 = gpiochip4 line 2 (GPIO4_A2, UART7_TX)")
+    print("                -> T5 P11 Pin 18 (P01, UART1_RX)")
 
 
 def main() -> None:

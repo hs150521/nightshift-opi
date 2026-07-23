@@ -66,7 +66,7 @@ class UartGateway:
         self._panel_online = False
 
     async def _connect(self) -> None:
-        import serial_asyncio  # type: ignore[import-untyped]
+        import serial_asyncio
 
         self._reader, self._writer = await serial_asyncio.open_serial_connection(
             url=self._config.device,
