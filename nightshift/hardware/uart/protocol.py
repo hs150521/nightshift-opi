@@ -104,7 +104,7 @@ def encode_hello(
     software_version: str,
 ) -> bytes:
     return struct.pack(
-        "<BBBIIH",
+        "<BBBIHH",
         peer_role,
         protocol_major,
         protocol_minor,
