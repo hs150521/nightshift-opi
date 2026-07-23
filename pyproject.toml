@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nightshift-opi"
 version = "0.1.0"
-description = "Nightshift Orange Pi 5B control service"
+description = "Nightshift Orange Pi 3B 2G control service"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",

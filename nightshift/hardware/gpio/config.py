@@ -1,4 +1,4 @@
-"""GPIO configuration for Nightshift Orange Pi 5B."""
+"""GPIO configuration for Nightshift Orange Pi 3B 2G."""
 
 from __future__ import annotations
 

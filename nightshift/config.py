@@ -29,7 +29,7 @@ def load_config(env_path: str | None = None) -> AppConfig:
             "stabilization_ms": int(os.getenv("NIGHTSHIFT_GPIO_STABILIZATION_MS", "2000")),
             "light": {
                 "chip": os.getenv("NIGHTSHIFT_GPIO_LIGHT_CHIP", "gpiochip3"),
-                "line": int(os.getenv("NIGHTSHIFT_GPIO_LIGHT_LINE", "11")),
+                "line": int(os.getenv("NIGHTSHIFT_GPIO_LIGHT_LINE", "22")),
                 "active_low": os.getenv("NIGHTSHIFT_GPIO_LIGHT_ACTIVE_LOW", "false").lower()
                 == "true",
                 "rising_debounce_ms": int(os.getenv("NIGHTSHIFT_GPIO_LIGHT_RISING_MS", "1000")),
@@ -50,13 +50,13 @@ def load_config(env_path: str | None = None) -> AppConfig:
     )
 
     uart_cfg = UartConfig(
-        device=os.getenv("NIGHTSHIFT_UART_DEVICE", "/dev/ttyS3"),
+        device=os.getenv("NIGHTSHIFT_UART_DEVICE", "/dev/ttyS1"),
         baudrate=int(os.getenv("NIGHTSHIFT_UART_BAUDRATE", "460800")),
         heartbeat_seconds=float(os.getenv("NIGHTSHIFT_UART_HEARTBEAT_SECONDS", "2.0")),
     )
 
     return AppConfig(
-        node_id=os.getenv("NIGHTSHIFT_NODE_ID", "opi5b01"),
+        node_id=os.getenv("NIGHTSHIFT_NODE_ID", "opi3b01"),
         gpio=gpio_cfg,
         uart=uart_cfg,
     )

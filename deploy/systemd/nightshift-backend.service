@@ -1,5 +1,5 @@
 [Unit]
-Description=Nightshift Orange Pi 5B backend
+Description=Nightshift Orange Pi 3B 2G backend
 After=network.target
 
 [Service]

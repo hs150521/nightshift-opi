@@ -1,4 +1,4 @@
-# Nightshift Orange Pi 5B TODO
+# Nightshift Orange Pi 3B 2G TODO
 
 This file tracks hardware and software capabilities that are **not yet wired or implemented**.
 No mocks or stubs are kept in the production code for these items; they are intentionally absent.
@@ -6,7 +6,7 @@ No mocks or stubs are kept in the production code for these items; they are inte
 ## Hardware not yet connected
 
 - **Pressure sensor (sit detect)**
-  - Wiring: not connected to Orange Pi 5B GPIO.
+  - Wiring: not connected to Orange Pi 3B 2G GPIO.
   - Impact: `NIGHTSHIFT_GPIO_SIT_ENABLED=false` by default.
   - State machine treats `sit` as `false` until the sensor is enabled in configuration.
   - TODO after wiring: set `NIGHTSHIFT_GPIO_SIT_ENABLED=true`, update chip/line, verify active-high/low.
@@ -47,7 +47,9 @@ No mocks or stubs are kept in the production code for these items; they are inte
 
 ## Next immediate steps
 
-1. Verify Orange Pi 5B UART device node for Pin 15/16.
-2. Verify `gpiochip3 line 11` maps to Pin 7 and the light sensor active level.
+1. Confirm the UART overlay for Pin 15/16 is enabled and the matching `/dev/ttyS*` node exists.
+   - Current image only exposes `/dev/ttyS1` (UART1 on GPIO2_B3/B4), which is not on the 40-pin header.
+   - Run: `ls -l /dev/ttyS*` and `sudo gpioinfo` to verify the overlay took effect.
+2. Verify `gpiochip3 line 22` (GPIO3_C6) maps to Pin 7 and the light sensor active level.
 3. Power on and run a smoke test: light on -> IDLE (warm), light off -> NIGHT_EXEC (blue).
 4. Wire pressure sensor and enable `NIGHTSHIFT_GPIO_SIT_ENABLED`.

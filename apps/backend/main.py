@@ -1,4 +1,4 @@
-"""Nightshift Orange Pi 5B backend entry point."""
+"""Nightshift Orange Pi 3B 2G backend entry point."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""GPIO adapter for Orange Pi 5B using libgpiod."""
+"""GPIO adapter for Orange Pi 3B 2G using libgpiod."""
 
 from __future__ import annotations
 
