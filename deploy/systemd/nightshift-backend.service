@@ -1,0 +1,17 @@
+[Unit]
+Description=Nightshift Orange Pi 5B backend
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/nightshift-opi
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/nightshift-opi/.env
+ExecStart=/opt/nightshift-opi/.venv/bin/python apps/backend/main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
