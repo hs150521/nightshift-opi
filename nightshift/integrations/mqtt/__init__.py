@@ -1,0 +1,1 @@
+"""MQTT external integration adapter."""

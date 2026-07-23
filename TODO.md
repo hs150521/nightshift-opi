@@ -34,13 +34,15 @@ No mocks or stubs are kept in the production code for these items; they are inte
 
 - **MQTT external interface**
   - `NIGHTSHIFT_MQTT_ENABLED=false` by default.
-  - No MQTT client, topics, publisher or command handler implemented.
+  - Core MQTT adapter implemented: client, topics, schemas, publisher, command handler.
+  - Remaining: ACL/auth, TLS, Home Assistant integration, telemetry, dev broker CLI.
 
 - **Audio service and T5 audio commands**
   - Commands `AUDIO_PLAY`, `AUDIO_STOP`, `VOLUME_SET`, `MIC_START`, etc. are defined in the protocol but not used.
 
 - **Simulator tools**
-  - `tools/gpio_simulator.py`, `tools/t5_uart_simulator.py`, `tools/mqtt_debug_client.py` do not exist.
+  - `tools/gpio_simulator.py`, `tools/t5_uart_simulator.py` do not exist.
+  - `tools/mqtt_debug_client.py` not yet created.
 
 - **Tests**
   - No `tests/` directory yet.
@@ -49,8 +51,12 @@ No mocks or stubs are kept in the production code for these items; they are inte
 
 - [x] Correct target board to Orange Pi 3B 2G.
 - [x] Enable `rk3568-uart7-m2` overlay in `/boot/extlinux/extlinux.conf`.
+- [x] Implement MQTT external integration (client, topics, schemas, publisher, command handler).
+- [x] Configure Mosquitto broker on 127.0.0.1:1883 for development.
 - [ ] Reboot so `/dev/ttyS7` appears.
 - [ ] Verify `gpiochip4 line 4` (GPIO4_A4) maps to Pin 7 and the light sensor active level.
 - [ ] Verify UART7 wiring: OPI Pin15 -> T5 P11 Pin18 (UART1_RX), OPI Pin16 -> T5 P11 Pin10 (UART1_TX), GND -> T5 P11 Pin13/17.
 - [ ] Power on and run a smoke test: light on -> IDLE (warm), light off -> NIGHT_EXEC (blue).
 - [ ] Wire pressure sensor and enable `NIGHTSHIFT_GPIO_SIT_ENABLED`.
+- [ ] Add MQTT ACL, authentication and TLS configuration.
+- [ ] Implement `tools/mqtt_debug_client.py` for local debugging.

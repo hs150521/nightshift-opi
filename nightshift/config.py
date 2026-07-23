@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from nightshift.hardware.gpio.config import GpioConfig
 from nightshift.hardware.uart.gateway import UartConfig
+from nightshift.integrations.mqtt.config import MqttConfig
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class AppConfig:
     node_id: str
     gpio: GpioConfig
     uart: UartConfig
+    mqtt: MqttConfig
 
 
 def load_config(env_path: str | None = None) -> AppConfig:
@@ -55,8 +57,13 @@ def load_config(env_path: str | None = None) -> AppConfig:
         heartbeat_seconds=float(os.getenv("NIGHTSHIFT_UART_HEARTBEAT_SECONDS", "2.0")),
     )
 
+    node_id = os.getenv("NIGHTSHIFT_NODE_ID", "opi3b01")
+
+    mqtt_cfg = MqttConfig.from_env(node_id)
+
     return AppConfig(
-        node_id=os.getenv("NIGHTSHIFT_NODE_ID", "opi3b01"),
+        node_id=node_id,
         gpio=gpio_cfg,
         uart=uart_cfg,
+        mqtt=mqtt_cfg,
     )

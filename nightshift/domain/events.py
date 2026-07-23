@@ -10,6 +10,8 @@ from nightshift.domain.models import EnvironmentState, SystemMode, WorkState
 @dataclass(frozen=True)
 class EnvironmentChanged:
     environment: EnvironmentState
+    revision: int = 0
+    occurred_at_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,16 @@ class ModeChanged:
     previous: SystemMode
     current: SystemMode
     reason: str
+    revision: int = 0
+    occurred_at_ms: int = 0
+
+    @property
+    def from_mode(self) -> SystemMode:
+        return self.previous
+
+    @property
+    def to_mode(self) -> SystemMode:
+        return self.current
 
 
 @dataclass(frozen=True)

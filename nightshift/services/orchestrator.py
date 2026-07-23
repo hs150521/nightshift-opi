@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import structlog
 
 from nightshift.domain import commands as cmd
 from nightshift.domain.events import (
     DomainEvent,
+    EnvironmentChanged,
     HeartbeatReceived,
+    ModeChanged,
     PanelConnectivityChanged,
     UiAction,
 )
@@ -29,6 +33,9 @@ from nightshift.hardware.uart import protocol as proto
 from nightshift.hardware.uart.gateway import UartConfig, UartGateway
 
 logger = structlog.get_logger()
+
+StateListener = Callable[[SystemState], Coroutine[Any, Any, None]]
+EventListener = Callable[[DomainEvent], Coroutine[Any, Any, None]]
 
 
 class NightshiftOrchestrator:
@@ -62,6 +69,8 @@ class NightshiftOrchestrator:
         self._gpio = GpioAdapter(gpio_config)
         self._poll_task: asyncio.Task[None] | None = None
         self._sync_task: asyncio.Task[None] | None = None
+        self._state_listeners: list[StateListener] = []
+        self._event_listeners: list[EventListener] = []
 
     @property
     def state(self) -> SystemState:
@@ -83,6 +92,29 @@ class NightshiftOrchestrator:
         self._gpio.close()
         logger.info("orchestrator_stopped")
 
+    def register_state_listener(self, listener: StateListener) -> None:
+        self._state_listeners.append(listener)
+
+    def register_event_listener(self, listener: EventListener) -> None:
+        self._event_listeners.append(listener)
+
+    async def pause_executor(self) -> None:
+        self._state = self._state.evolve(
+            work_state=WorkState.PAUSED,
+            updated_at_ms=int(time.monotonic() * 1000),
+        )
+        await self._publish_state()
+
+    async def resume_executor(self) -> None:
+        self._state = self._state.evolve(
+            work_state=WorkState.RUNNING,
+            updated_at_ms=int(time.monotonic() * 1000),
+        )
+        await self._publish_state()
+
+    async def resync_panel(self) -> None:
+        await self._full_sync()
+
     async def _gpio_poll_loop(self) -> None:
         while True:
             try:
@@ -96,8 +128,21 @@ class NightshiftOrchestrator:
         mode, reason = derive_mode(env)
         attention = derive_attention(env)
 
+        previous_mode = self._state.mode
+
         if mode == self._state.mode and attention == self._state.attention:
-            # No business change; keep revision stable.
+            if env != self._state.environment:
+                self._state = self._state.evolve(
+                    environment=env,
+                    updated_at_ms=env.changed_at_ms,
+                )
+                await self._notify_event_listeners(
+                    EnvironmentChanged(
+                        environment=env,
+                        revision=self._state.revision,
+                        occurred_at_ms=env.changed_at_ms,
+                    )
+                )
             return
 
         self._state = self._state.evolve(
@@ -117,6 +162,17 @@ class NightshiftOrchestrator:
             sit=self._state.environment.sit,
         )
         await self._publish_state()
+
+        if mode != previous_mode:
+            await self._notify_event_listeners(
+                ModeChanged(
+                    previous=previous_mode,
+                    current=mode,
+                    reason=reason,
+                    revision=self._state.revision,
+                    occurred_at_ms=env.changed_at_ms,
+                )
+            )
 
     async def _publish_state(self) -> None:
         try:
@@ -145,6 +201,22 @@ class NightshiftOrchestrator:
             )
         except Exception as exc:
             logger.warning("publish_state_failed", error=str(exc))
+
+        await self._notify_state_listeners(self._state)
+
+    async def _notify_state_listeners(self, state: SystemState) -> None:
+        for listener in self._state_listeners:
+            try:
+                await listener(state)
+            except Exception:
+                logger.exception("state_listener_failed")
+
+    async def _notify_event_listeners(self, event: DomainEvent) -> None:
+        for listener in self._event_listeners:
+            try:
+                await listener(event)
+            except Exception:
+                logger.exception("event_listener_failed")
 
     async def _full_sync(self) -> None:
         try:
