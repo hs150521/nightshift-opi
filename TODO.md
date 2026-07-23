@@ -45,11 +45,12 @@ No mocks or stubs are kept in the production code for these items; they are inte
 - **Tests**
   - No `tests/` directory yet.
 
-## Next immediate steps
+## Completed / in progress
 
-1. Confirm the UART overlay for Pin 15/16 is enabled and the matching `/dev/ttyS*` node exists.
-   - Current image only exposes `/dev/ttyS1` (UART1 on GPIO2_B3/B4), which is not on the 40-pin header.
-   - Run: `ls -l /dev/ttyS*` and `sudo gpioinfo` to verify the overlay took effect.
-2. Verify `gpiochip3 line 22` (GPIO3_C6) maps to Pin 7 and the light sensor active level.
-3. Power on and run a smoke test: light on -> IDLE (warm), light off -> NIGHT_EXEC (blue).
-4. Wire pressure sensor and enable `NIGHTSHIFT_GPIO_SIT_ENABLED`.
+- [x] Correct target board to Orange Pi 3B 2G.
+- [x] Enable `rk3568-uart7-m1` overlay in `/boot/extlinux/extlinux.conf`.
+- [ ] Reboot so `/dev/ttyS7` appears.
+- [ ] Rewire T5 UART from Pin 15/16 to Pin 3/5 (GND can stay on Pin 14).
+- [ ] Verify `gpiochip3 line 22` (GPIO3_C6) maps to Pin 7 and the light sensor active level.
+- [ ] Power on and run a smoke test: light on -> IDLE (warm), light off -> NIGHT_EXEC (blue).
+- [ ] Wire pressure sensor and enable `NIGHTSHIFT_GPIO_SIT_ENABLED`.

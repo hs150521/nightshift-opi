@@ -50,7 +50,7 @@ def load_config(env_path: str | None = None) -> AppConfig:
     )
 
     uart_cfg = UartConfig(
-        device=os.getenv("NIGHTSHIFT_UART_DEVICE", "/dev/ttyS1"),
+        device=os.getenv("NIGHTSHIFT_UART_DEVICE", "/dev/ttyS7"),
         baudrate=int(os.getenv("NIGHTSHIFT_UART_BAUDRATE", "460800")),
         heartbeat_seconds=float(os.getenv("NIGHTSHIFT_UART_HEARTBEAT_SECONDS", "2.0")),
     )
