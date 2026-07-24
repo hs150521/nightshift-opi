@@ -28,12 +28,15 @@ def check_uart() -> None:
             status = "(no status)"
         print(f"{node.name}: {status}")
 
-    if not Path("/dev/ttyS7").exists():
-        print("\nWARNING: /dev/ttyS7 is missing.")
-        print("  1. Confirm rk3568-uart7-m2 overlay is enabled in /boot/extlinux/extlinux.conf.")
+    if not Path("/dev/ttyS3").exists():
+        print("\nWARNING: /dev/ttyS3 is missing.")
+        print(
+            "  1. Confirm rk3566-orangepi-3b-uart3 overlay is enabled in "
+            "/boot/extlinux/extlinux.conf."
+        )
         print("  2. Reboot the board.")
     else:
-        print("\nOK: /dev/ttyS7 is present.")
+        print("\nOK: /dev/ttyS3 is present.")
 
 
 def check_gpio() -> None:
@@ -43,10 +46,10 @@ def check_gpio() -> None:
     print("\n=== Expected wiring ===")
     print("Light sensor -> Pin 7 = gpiochip4 line 4 (GPIO4_A4)")
     print("T5 GND       -> Pin 14 (GND) -> T5 P11 Pin 13 or 17")
-    print("T5 TX        -> Pin 16 = gpiochip4 line 3 (GPIO4_A3, UART7_RX)")
-    print("                -> T5 P11 Pin 10 (P00, UART1_TX)")
-    print("T5 RX        -> Pin 15 = gpiochip4 line 2 (GPIO4_A2, UART7_TX)")
-    print("                -> T5 P11 Pin 18 (P01, UART1_RX)")
+    print("T5 TX        -> Pin 27 = gpiochip1 line 1 (GPIO1_A1, UART3_RX)")
+    print("                -> T5 P11 Pin 12 (P10, UART0_RX)")
+    print("T5 RX        -> Pin 28 = gpiochip1 line 0 (GPIO1_A0, UART3_TX)")
+    print("                -> T5 P11 Pin 14 (P11, UART0_TX)")
 
 
 def main() -> None:
