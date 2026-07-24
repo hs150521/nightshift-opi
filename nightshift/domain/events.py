@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from nightshift.domain.models import EnvironmentState, SystemMode, WorkState
+from nightshift.domain.models import SystemMode, WorkState
+from nightshift.domain.pressure import PressureState
 
 
 @dataclass(frozen=True)
-class EnvironmentChanged:
-    environment: EnvironmentState
+class PressureChanged:
+    pressure: PressureState
     revision: int = 0
     occurred_at_ms: int = 0
 
@@ -67,7 +68,7 @@ class HeartbeatReceived:
 
 
 DomainEvent = (
-    EnvironmentChanged
+    PressureChanged
     | ModeChanged
     | WorkStateChanged
     | AttentionChanged

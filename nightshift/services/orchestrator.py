@@ -1,4 +1,12 @@
-"""Nightshift orchestrator: wires GPIO, state machine and UART gateway."""
+"""Nightshift orchestrator: wires the pressure source, state machine, UART, and MQTT.
+
+The orchestrator holds the authoritative `SystemState`. Inputs:
+- Pressure updates (event-driven from the MQTT pressure adapter, or manual
+  pushes from tests / the mock source).
+- A low-rate dwell tick so the 3 s all-released timer keeps advancing when
+  no new pressure sample arrives.
+- UART events from the T5 panel (heartbeat, connectivity, UI actions).
+"""
 
 from __future__ import annotations
 
@@ -12,23 +20,21 @@ import structlog
 from nightshift.domain import commands as cmd
 from nightshift.domain.events import (
     DomainEvent,
-    EnvironmentChanged,
     HeartbeatReceived,
     ModeChanged,
     PanelConnectivityChanged,
+    PressureChanged,
     UiAction,
 )
 from nightshift.domain.models import (
     AttentionFlag,
     DashboardState,
-    EnvironmentState,
     SystemMode,
     SystemState,
     WorkState,
 )
-from nightshift.domain.state_machine import derive_attention, derive_mode
-from nightshift.hardware.gpio.adapter import GpioAdapter
-from nightshift.hardware.gpio.config import GpioConfig
+from nightshift.domain.pressure import PressureSource, PressureState
+from nightshift.domain.state_machine import StateMachineV2
 from nightshift.hardware.uart import protocol as proto
 from nightshift.hardware.uart.gateway import UartConfig, UartGateway
 
@@ -43,21 +49,31 @@ class NightshiftOrchestrator:
 
     def __init__(
         self,
-        gpio_config: GpioConfig,
+        pressure_source: PressureSource,
         uart_config: UartConfig,
-        poll_interval_ms: float = 50.0,
+        *,
+        dwell_ms: int | None = None,
+        stale_ms: int | None = None,
+        tick_interval_ms: float = 250.0,
     ) -> None:
-        self._gpio_config = gpio_config
+        self._pressure_source = pressure_source
         self._uart_config = uart_config
-        self._poll_interval_ms = poll_interval_ms
+        self._tick_interval_ms = tick_interval_ms
+
+        sm_kwargs: dict[str, int] = {}
+        if dwell_ms is not None:
+            sm_kwargs["dwell_ms"] = dwell_ms
+        if stale_ms is not None:
+            sm_kwargs["stale_ms"] = stale_ms
+        self._state_machine = StateMachineV2(**sm_kwargs)
 
         now = int(time.monotonic() * 1000)
         self._state = SystemState(
             revision=0,
             mode=SystemMode.IDLE,
-            attention=AttentionFlag.NONE,
+            attention=AttentionFlag.SENSOR_ERROR,
             work_state=WorkState.STOPPED,
-            environment=EnvironmentState(ready=False, sit=False, light=False, changed_at_ms=now),
+            pressure=PressureState.empty(),
             panel_online=False,
             confirmation_count=0,
             token_input=0,
@@ -65,31 +81,30 @@ class NightshiftOrchestrator:
             updated_at_ms=now,
         )
         self._dashboard = DashboardState(revision=0)
-        self._uart = UartGateway(uart_config, on_event=self._on_event)
-        self._gpio = GpioAdapter(gpio_config)
-        self._poll_task: asyncio.Task[None] | None = None
-        self._sync_task: asyncio.Task[None] | None = None
+        self._uart = UartGateway(
+            uart_config,
+            on_event=self._on_event,
+            on_panel_hello=self._on_panel_hello,
+        )
+        self._tick_task: asyncio.Task[None] | None = None
         self._state_listeners: list[StateListener] = []
         self._event_listeners: list[EventListener] = []
+        self._lock = asyncio.Lock()
 
     @property
     def state(self) -> SystemState:
         return self._state
 
     async def start(self) -> None:
-        self._gpio.open()
         await self._uart.start()
-        self._poll_task = asyncio.create_task(self._gpio_poll_loop())
+        self._tick_task = asyncio.create_task(self._tick_loop())
         await self._full_sync()
         logger.info("orchestrator_started")
 
     async def stop(self) -> None:
-        if self._poll_task:
-            self._poll_task.cancel()
-        if self._sync_task:
-            self._sync_task.cancel()
+        if self._tick_task:
+            self._tick_task.cancel()
         await self._uart.stop()
-        self._gpio.close()
         logger.info("orchestrator_stopped")
 
     def register_state_listener(self, listener: StateListener) -> None:
@@ -115,64 +130,84 @@ class NightshiftOrchestrator:
     async def resync_panel(self) -> None:
         await self._full_sync()
 
-    async def _gpio_poll_loop(self) -> None:
+    async def on_pressure_updated(self) -> None:
+        """Called by the pressure adapter after each new sample or availability flip."""
+        await self._evaluate_and_apply()
+
+    async def _tick_loop(self) -> None:
         while True:
             try:
-                env = self._gpio.poll()
-                await self._apply_environment(env)
-                await asyncio.sleep(self._poll_interval_ms / 1000.0)
+                await asyncio.sleep(self._tick_interval_ms / 1000.0)
+                await self._evaluate_and_apply()
             except asyncio.CancelledError:
                 break
+            except Exception:
+                logger.exception("tick_loop_iteration_failed")
 
-    async def _apply_environment(self, env: EnvironmentState) -> None:
-        mode, reason = derive_mode(env)
-        attention = derive_attention(env)
+    async def _evaluate_and_apply(self) -> None:
+        async with self._lock:
+            pressure = self._pressure_source.snapshot()
+            now_ms = int(time.monotonic() * 1000)
+            decision = self._state_machine.evaluate(pressure, now_ms=now_ms)
 
-        previous_mode = self._state.mode
+            previous_mode = self._state.mode
+            previous_attention = self._state.attention
+            previous_pressure = self._state.pressure
 
-        if mode == self._state.mode and attention == self._state.attention:
-            if env != self._state.environment:
-                self._state = self._state.evolve(
-                    environment=env,
-                    updated_at_ms=env.changed_at_ms,
-                )
+            attention = self._merge_attention(decision.attention)
+
+            pressure_changed = pressure != previous_pressure
+            mode_changed = decision.mode != previous_mode
+            attention_changed = attention != previous_attention
+
+            if not (pressure_changed or mode_changed or attention_changed):
+                return
+
+            self._state = self._state.evolve(
+                mode=decision.mode,
+                attention=attention,
+                pressure=pressure,
+                updated_at_ms=now_ms,
+            )
+
+            logger.info(
+                "state_evaluated",
+                revision=self._state.revision,
+                mode=self._state.mode.value,
+                attention=int(self._state.attention),
+                reason=decision.reason,
+                pressure_online=pressure.online,
+                pressure_valid=pressure.is_valid(now_ms, stale_ms=self._state_machine.stale_ms),
+                cushion=pressure.cushion,
+                footrest=pressure.footrest,
+            )
+
+            if pressure_changed:
                 await self._notify_event_listeners(
-                    EnvironmentChanged(
-                        environment=env,
+                    PressureChanged(
+                        pressure=pressure,
                         revision=self._state.revision,
-                        occurred_at_ms=env.changed_at_ms,
+                        occurred_at_ms=now_ms,
                     )
                 )
-            return
-
-        self._state = self._state.evolve(
-            mode=mode,
-            attention=attention,
-            environment=env,
-            updated_at_ms=env.changed_at_ms,
-        )
-        logger.info(
-            "state_changed",
-            revision=self._state.revision,
-            mode=self._state.mode.value,
-            attention=int(self._state.attention),
-            reason=reason,
-            ready=self._state.environment.ready,
-            light=self._state.environment.light,
-            sit=self._state.environment.sit,
-        )
-        await self._publish_state()
-
-        if mode != previous_mode:
-            await self._notify_event_listeners(
-                ModeChanged(
-                    previous=previous_mode,
-                    current=mode,
-                    reason=reason,
-                    revision=self._state.revision,
-                    occurred_at_ms=env.changed_at_ms,
+            if mode_changed:
+                await self._notify_event_listeners(
+                    ModeChanged(
+                        previous=previous_mode,
+                        current=decision.mode,
+                        reason=decision.reason,
+                        revision=self._state.revision,
+                        occurred_at_ms=now_ms,
+                    )
                 )
-            )
+
+            await self._publish_state()
+
+    def _merge_attention(self, from_state_machine: AttentionFlag) -> AttentionFlag:
+        # Keep panel-connectivity flag under our own control; the state
+        # machine only owns SENSOR_ERROR here.
+        preserved = self._state.attention & AttentionFlag.PANEL_OFFLINE
+        return from_state_machine | preserved
 
     async def _publish_state(self) -> None:
         try:
@@ -242,14 +277,20 @@ class NightshiftOrchestrator:
             if not panel_online:
                 asyncio.create_task(self._full_sync())
         elif isinstance(event, PanelConnectivityChanged):
+            attention = self._state.attention
+            if not event.online:
+                attention = attention | AttentionFlag.PANEL_OFFLINE
+            else:
+                attention = attention & ~AttentionFlag.PANEL_OFFLINE
             self._state = self._state.evolve(
                 panel_online=event.online,
-                attention=self._state.attention | AttentionFlag.PANEL_OFFLINE
-                if not event.online
-                else self._state.attention & ~AttentionFlag.PANEL_OFFLINE,
+                attention=attention,
                 updated_at_ms=int(time.monotonic() * 1000),
             )
             asyncio.create_task(self._publish_state())
         elif isinstance(event, UiAction):
             logger.info("ui_action_received", action=event.action, object_id=event.object_id)
             # TODO: forward to confirmation/task service once implemented.
+
+    async def _on_panel_hello(self) -> None:
+        await self._full_sync()

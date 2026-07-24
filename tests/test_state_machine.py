@@ -1,10 +1,10 @@
-"""Tests for the v2 state machine (pressure + 3 s all-released dwell)."""
+"""Tests for the state machine (pressure + 3 s all-released dwell)."""
 
 from __future__ import annotations
 
 from nightshift.domain.models import AttentionFlag, SystemMode
 from nightshift.domain.pressure_mock import MockPressureSource
-from nightshift.domain.state_machine_v2 import StateMachineV2
+from nightshift.domain.state_machine import StateMachineV2
 
 
 def test_idle_when_pressure_offline() -> None:

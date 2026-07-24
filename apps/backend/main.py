@@ -9,6 +9,7 @@ import structlog
 
 from nightshift.config import load_config
 from nightshift.domain.events import ModeChanged
+from nightshift.domain.pressure_mock import MockPressureSource
 from nightshift.integrations.mqtt.client import MqttClient
 from nightshift.services.orchestrator import NightshiftOrchestrator
 
@@ -17,9 +18,18 @@ logger = structlog.get_logger()
 
 async def main() -> None:
     config = load_config()
+
+    # TODO(pressure-adapter): swap for the real MQTT-backed PressureSource once
+    # the adapter lands. Until then the mock source keeps the backend runnable
+    # end-to-end but reports "offline", so the state machine parks in IDLE with
+    # SENSOR_ERROR (which is the correct behaviour before hardware ingest).
+    pressure_source = MockPressureSource()
+
     orchestrator = NightshiftOrchestrator(
-        gpio_config=config.gpio,
+        pressure_source=pressure_source,
         uart_config=config.uart,
+        dwell_ms=config.pressure.dwell_ms,
+        stale_ms=config.pressure.stale_ms,
     )
 
     mqtt_client: MqttClient | None = None
@@ -48,8 +58,9 @@ async def main() -> None:
         node_id=config.node_id,
         uart=config.uart.device,
         baudrate=config.uart.baudrate,
-        light_chip=config.gpio.light.chip,
-        light_line=config.gpio.light.line,
+        pressure_client_id=config.pressure.client_id,
+        pressure_stale_ms=config.pressure.stale_ms,
+        pressure_dwell_ms=config.pressure.dwell_ms,
         mqtt_enabled=config.mqtt.enabled,
     )
 

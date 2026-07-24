@@ -2,14 +2,13 @@
 
 Orange Pi 3B 2G control service for the Nightshift desktop agent host.
 
-> **Note:** This repository originally assumed an Orange Pi 5B. The target board has been corrected to **Orange Pi 3B 2G**. GPIO and UART defaults below reflect the Orange Pi 3B 40-pin header; always verify with `gpioinfo` on your actual system before running.
+> **Note:** This repository originally assumed an Orange Pi 5B. The target board has been corrected to **Orange Pi 3B 2G**. UART defaults below reflect the Orange Pi 3B 40-pin header; always verify on your actual system before running.
 
 ## Current wiring
 
-- **Light sensor (EBF26040003)**
-  - Pin 1 (3.3V) -> VCC
-  - Pin 6 (GND) -> GND
-  - Pin 7 (GPIO4_A4) -> digital output
+The Opi3B talks to two peripherals: the T5AI-BOARD panel over UART, and the
+ESP32 pressure sensor (`pressure-01`) over MQTT. There is no local GPIO in
+the runtime path — the light sensor has been removed.
 
 - **T5AI-BOARD UART (T5 P11 header)** — verified working
   - Pin 14 (GND)                -> T5 P11 header GND
@@ -39,9 +38,9 @@ After reboot you should see `/dev/ttyS3`.
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev,gpio]"
+pip install -e ".[dev]"
 cp .env.example .env
-# Edit .env to match the actual UART device and GPIO chip/line mapping.
+# Edit .env to match the actual UART device.
 python apps/backend/main.py
 ```
 
@@ -65,18 +64,13 @@ mosquitto_pub -h 127.0.0.1 -p 1883 -u nightshift-opi -P nightshift-opi-secret \
   -t 'nightshift/v1/test' -m 'hello'
 ```
 
-## Verify GPIO and UART mapping
+## Verify UART mapping
 
 ```bash
 # Check UARTs
 ls -l /dev/ttyS*
 for u in /proc/device-tree/serial@*; do printf "%s: " "$u"; tr -d '\0' < "$u/status" 2>/dev/null || echo "(no status)"; done
-
-# Check GPIO
-sudo gpioinfo | grep -E "gpiochip[0-9]+"
 ```
-
-Confirm the chip and line for Pin 7 and update `NIGHTSHIFT_GPIO_LIGHT_CHIP` / `NIGHTSHIFT_GPIO_LIGHT_LINE` if needed.
 
 You can also run the wiring verification helper:
 

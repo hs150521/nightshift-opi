@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntFlag, StrEnum
 
+from nightshift.domain.pressure import PressureState
+
 
 class SystemMode(StrEnum):
     IDLE = "idle"
@@ -33,20 +35,12 @@ class AttentionFlag(IntFlag):
 
 
 @dataclass(frozen=True)
-class EnvironmentState:
-    ready: bool
-    sit: bool
-    light: bool
-    changed_at_ms: int
-
-
-@dataclass(frozen=True)
 class SystemState:
     revision: int
     mode: SystemMode
     attention: AttentionFlag
     work_state: WorkState
-    environment: EnvironmentState
+    pressure: PressureState
     panel_online: bool
     confirmation_count: int
     token_input: int
@@ -59,7 +53,7 @@ class SystemState:
         mode: SystemMode | None = None,
         attention: AttentionFlag | None = None,
         work_state: WorkState | None = None,
-        environment: EnvironmentState | None = None,
+        pressure: PressureState | None = None,
         panel_online: bool | None = None,
         confirmation_count: int | None = None,
         token_input: int | None = None,
@@ -71,7 +65,7 @@ class SystemState:
             mode=mode if mode is not None else self.mode,
             attention=attention if attention is not None else self.attention,
             work_state=work_state if work_state is not None else self.work_state,
-            environment=environment if environment is not None else self.environment,
+            pressure=pressure if pressure is not None else self.pressure,
             panel_online=panel_online if panel_online is not None else self.panel_online,
             confirmation_count=(
                 confirmation_count if confirmation_count is not None else self.confirmation_count
@@ -91,11 +85,3 @@ class DashboardState:
     normal_confirm: int = 0
     completed_today: int = 0
     failed_today: int = 0
-
-
-@dataclass(frozen=True)
-class UptimeState:
-    opi_ms: int
-    t5_ms: int
-    applied_revision: int
-    error_flags: int

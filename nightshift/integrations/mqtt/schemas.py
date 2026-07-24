@@ -173,13 +173,14 @@ def build_state(
     state: SystemState,
     node_id: str,
     dashboard: DashboardState | None = None,
+    now_ms: int | None = None,
+    stale_ms: int | None = None,
 ) -> str:
     attention = []
     for flag in AttentionFlag:
         if flag in state.attention and flag != AttentionFlag.NONE and flag.name:
             attention.append(flag.name.lower())
 
-    env = state.environment
     panel: dict[str, Any] = {"online": state.panel_online}
 
     dash = dashboard or DashboardState(
@@ -192,19 +193,34 @@ def build_state(
         failed_today=0,
     )
 
+    pressure = state.pressure
+    sample = pressure.last_sample
+    if now_ms is not None and stale_ms is not None:
+        valid = pressure.is_valid(now_ms, stale_ms=stale_ms)
+    else:
+        valid = sample is not None and pressure.online
+
+    pressure_block: dict[str, Any] = {
+        "online": pressure.online,
+        "valid": valid,
+        "cushion": pressure.cushion,
+        "footrest": pressure.footrest,
+        "updated_at_ms": pressure.updated_at_ms,
+    }
+    if sample is not None:
+        pressure_block["device_id"] = sample.device_id
+        pressure_block["boot_id"] = sample.boot_id
+        pressure_block["seq"] = sample.seq
+
     return json.dumps(
         {
-            "schema": "nightshift.system-state.v1",
+            "schema": "nightshift.system-state.v2",
             "revision": state.revision,
             "node_id": node_id,
             "mode": state.mode,
             "attention": attention,
             "work_state": state.work_state,
-            "environment": {
-                "ready": env.ready,
-                "sit": env.sit,
-                "light": env.light,
-            },
+            "pressure": pressure_block,
             "panel": panel,
             "tasks": {
                 "urgent_auto": dash.urgent_auto,
