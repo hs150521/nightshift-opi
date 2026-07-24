@@ -128,10 +128,10 @@ def encode_state_sync_end(revision: int, snapshot_crc32: int) -> bytes:
 
 def encode_mode_set(revision: int, mode: SystemMode, changed_at_ms: int, reason: int = 0) -> bytes:
     return struct.pack(
-        "<IBIQ",
+        "<IBBQ",
         revision,
         cmd.MODE_TO_BYTE[mode.value],
-        reason,
+        reason & 0xFF,
         changed_at_ms,
     )
 
@@ -165,7 +165,8 @@ def encode_work_state_set(
 ) -> bytes:
     return (
         struct.pack(
-            "<BHHIIII",
+            "<IBHHIIII",
+            revision,
             cmd.WORK_STATE_TO_BYTE[work_state.value],
             progress_permille,
             0,  # reserved
@@ -208,15 +209,15 @@ def encode_ui_action(
 
 
 def parse_heartbeat_response(payload: bytes) -> dict[str, int]:
-    if len(payload) < 10:
+    if len(payload) < 14:
         raise ProtocolError("heartbeat response too short")
-    status = int.from_bytes(payload[:2], "little")
-    t5_uptime_ms, applied_revision, error_flags = struct.unpack("<III", payload[2:14])
+    state, mode, revision, tokens_in, tokens_out = struct.unpack("<BBIII", payload[:14])
     return {
-        "status": status,
-        "t5_uptime_ms": t5_uptime_ms,
-        "applied_revision": applied_revision,
-        "error_flags": error_flags,
+        "state": state,
+        "mode": mode,
+        "revision": revision,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
     }
 
 

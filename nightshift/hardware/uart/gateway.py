@@ -30,9 +30,11 @@ class UartGateway:
         self,
         config: UartConfig,
         on_event: Callable[[Any], None] | None = None,
+        on_panel_hello: Callable[[], Any] | None = None,
     ) -> None:
         self._config = config
         self._on_event = on_event
+        self._on_panel_hello = on_panel_hello
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._sequence = 0
@@ -156,6 +158,23 @@ class UartGateway:
                 fut.set_result(frame)
             return
 
+        if frame.command == cmd.HELLO:
+            # Panel-initiated handshake (reboot/reconnect). ACK first with the
+            # original sequence, then trigger a snapshot resync.
+            await self._send_ack(frame, cmd.OK)
+            if self._on_panel_hello:
+                try:
+                    result = self._on_panel_hello()
+                    if asyncio.iscoroutine(result):
+                        asyncio.create_task(result)
+                except Exception:
+                    pass
+            if not self._panel_online:
+                self._panel_online = True
+                if self._on_event:
+                    self._on_event(PanelConnectivityChanged(online=True))
+            return
+
         if frame.command == cmd.UI_ACTION:
             try:
                 action, object_type, object_id, value, text = proto.parse_ui_action(frame.payload)
@@ -171,15 +190,25 @@ class UartGateway:
                     )
             except Exception:
                 pass
+            if frame.flags & cmd.FLAG_ACK_REQ:
+                await self._send_ack(frame, cmd.OK)
             return
 
-        # Unknown events are acknowledged but otherwise ignored.
+        # Unknown events are acknowledged (preserving sequence) but ignored.
         if frame.flags & cmd.FLAG_ACK_REQ:
-            await self.send_no_wait(
-                frame.command,
-                cmd.OK.to_bytes(2, "little"),
-                cmd.FLAG_RESPONSE,
-            )
+            await self._send_ack(frame, cmd.OK)
+
+    async def _send_ack(self, frame: proto.Frame, status: int) -> None:
+        if self._writer is None:
+            return
+        ack = proto.Frame(
+            version=frame.version,
+            flags=cmd.FLAG_RESPONSE,
+            sequence=frame.sequence,
+            command=frame.command,
+            payload=status.to_bytes(2, "little"),
+        )
+        self._writer.write(stuff_frame(ack.raw))
 
     async def _heartbeat_loop(self) -> None:
         while True:
@@ -190,7 +219,7 @@ class UartGateway:
                 try:
                     resp = await self.send(cmd.HEARTBEAT, payload, timeout_ms=200)
                     info = proto.parse_heartbeat_response(resp.payload)
-                    self._last_applied_revision = info["applied_revision"]
+                    self._last_applied_revision = info["revision"]
                     if not self._panel_online:
                         self._panel_online = True
                         if self._on_event:
@@ -198,9 +227,11 @@ class UartGateway:
                     if self._on_event:
                         self._on_event(
                             HeartbeatReceived(
-                                t5_uptime_ms=info["t5_uptime_ms"],
-                                applied_revision=info["applied_revision"],
-                                error_flags=info["error_flags"],
+                                state=info["state"],
+                                mode=info["mode"],
+                                revision=info["revision"],
+                                tokens_in=info["tokens_in"],
+                                tokens_out=info["tokens_out"],
                             )
                         )
                 except TimeoutError:

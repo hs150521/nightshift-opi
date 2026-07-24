@@ -118,11 +118,13 @@ t5_link_v1:
       request:
         - { name: uptime_ms, type: u32 }
         - { name: state_revision, type: u32 }
+      # Response is exactly 14 bytes. This layout is frozen by T5 firmware.
       response:
-        - { name: status, type: u16 }
-        - { name: t5_uptime_ms, type: u32 }
-        - { name: applied_revision, type: u32 }
-        - { name: error_flags, type: u32 }
+        - { name: state, type: u8 }
+        - { name: mode, type: u8 }
+        - { name: revision, type: u32 }
+        - { name: tokens_in, type: u32 }
+        - { name: tokens_out, type: u32 }
 
     STATE_SYNC_BEGIN:
       request:
@@ -150,6 +152,7 @@ t5_link_v1:
 
     WORK_STATE_SET:
       request:
+        - { name: revision, type: u32 }
         - { name: work_state, type: u8 }
         - { name: progress_permille, type: u16 }
         - { name: reserved, type: u16 }

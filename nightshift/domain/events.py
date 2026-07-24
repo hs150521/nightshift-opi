@@ -59,9 +59,11 @@ class UiAction:
 
 @dataclass(frozen=True)
 class HeartbeatReceived:
-    t5_uptime_ms: int
-    applied_revision: int
-    error_flags: int
+    state: int
+    mode: int
+    revision: int
+    tokens_in: int
+    tokens_out: int
 
 
 DomainEvent = (
