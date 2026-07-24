@@ -192,6 +192,29 @@ def encode_dashboard_set(revision: int, dashboard: DashboardState) -> bytes:
     )
 
 
+def encode_notice_show(
+    revision: int,
+    notice_id: int,
+    severity: int,
+    flags: int,
+    expires_at_ms: int,
+    title: str,
+    body: str,
+) -> bytes:
+    return (
+        struct.pack(
+            "<IIBBQ",
+            revision,
+            notice_id,
+            severity,
+            flags,
+            expires_at_ms,
+        )
+        + _encode_string(title)
+        + _encode_string(body)
+    )
+
+
 def encode_ui_action(
     action: int,
     object_type: int,
@@ -208,24 +231,37 @@ def encode_ui_action(
     ) + _encode_string(text)
 
 
+def encode_page_event(page_id: int, event: int, object_id: int) -> bytes:
+    return struct.pack("<BBI", page_id, event, object_id)
+
+
+def encode_led_override(active: int, mode: int, period_ms: int) -> bytes:
+    return struct.pack("<BBH", active, mode, period_ms)
+
+
+def encode_backlight_set(percent: int) -> bytes:
+    return struct.pack("<B", percent)
+
+
 def parse_heartbeat_response(payload: bytes) -> dict[str, int]:
-    if len(payload) < 14:
-        raise ProtocolError("heartbeat response too short")
-    state, mode, revision, tokens_in, tokens_out = struct.unpack("<BBIII", payload[:14])
+    if len(payload) != 14:
+        raise ProtocolError("heartbeat response must be exactly 14 bytes")
+    status, t5_uptime_ms, applied_revision, error_flags = struct.unpack(
+        "<HIII", payload
+    )
     return {
-        "state": state,
-        "mode": mode,
-        "revision": revision,
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
+        "status": status,
+        "t5_uptime_ms": t5_uptime_ms,
+        "applied_revision": applied_revision,
+        "error_flags": error_flags,
     }
 
 
 def parse_ui_action(payload: bytes) -> tuple[int, int, int, int, str]:
-    if len(payload) < 10:
+    if len(payload) < 13:
         raise ProtocolError("ui_action payload too short")
-    action, object_type, object_id, value = struct.unpack("<HBIi", payload[:10])
-    text = _decode_string(payload[10:])
+    action, object_type, object_id, value = struct.unpack("<HBIi", payload[:11])
+    text = _decode_string(payload[11:])
     return action, object_type, object_id, value, text
 
 
@@ -236,6 +272,8 @@ def _encode_string(text: str) -> bytes:
 
 def _decode_string(data: bytes) -> str:
     if len(data) < 2:
-        return ""
+        raise ProtocolError("string length missing")
     length = int.from_bytes(data[:2], "little")
+    if len(data) != length + 2:
+        raise ProtocolError("string length mismatch")
     return data[2 : 2 + length].decode("utf-8", errors="replace")

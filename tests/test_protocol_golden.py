@@ -1,10 +1,4 @@
-"""Golden-vector round-trip tests for T5-Link v1 frames.
-
-Every entry in contracts/uart/golden_vectors.json must match the current
-encoder output byte-for-byte. Any drift means either the code or the contract
-has changed without the other — both must be updated atomically together with
-T5 firmware.
-"""
+"""Frozen T5-Link v1 schema and canonical wire-vector tests."""
 
 from __future__ import annotations
 
@@ -19,107 +13,87 @@ from nightshift.domain.models import AttentionFlag, DashboardState, SystemMode, 
 from nightshift.hardware.uart import protocol as proto
 from nightshift.hardware.uart.codec import stuff_frame, unstuff_frame
 
-CONTRACT = Path(__file__).resolve().parents[1] / "contracts" / "uart" / "golden_vectors.json"
+ROOT = Path(__file__).resolve().parents[1]
+CONTRACT = ROOT / "contracts" / "uart" / "golden_vectors.json"
+
+
+@pytest.fixture(scope="module")
+def golden() -> dict[str, dict]:
+    data = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    return {entry["name"]: entry for entry in data["golden_vectors"]}
 
 
 def _wire(frame: proto.Frame) -> bytes:
     return stuff_frame(frame.raw)
 
 
-@pytest.fixture(scope="module")
-def golden() -> dict[str, dict]:
-    data = json.loads(CONTRACT.read_text())
-    return {v["name"]: v for v in data["golden_vectors"]}
+def _assert_golden(golden: dict[str, dict], name: str, frame: proto.Frame) -> None:
+    assert _wire(frame).hex() == golden[name]["raw_hex"]
 
 
 def test_hello_request_matches_golden(golden: dict[str, dict]) -> None:
-    payload = proto.encode_hello(
-        peer_role=0x01,
-        protocol_major=1,
-        protocol_minor=0,
-        boot_id=0x12345678,
-        max_payload=1024,
-        capabilities=0x0001,
-        software_version="nightshift/0.1.0",
+    payload = proto.encode_hello(1, 1, 0, 0x12345678, 1024, 0x0003, "nightshift/1.0.0")
+    _assert_golden(golden, "hello_request", proto.Frame.request(1, cmd.HELLO, payload))
+
+
+def test_heartbeat_response_is_frozen_hiii(golden: dict[str, dict]) -> None:
+    request = proto.encode_heartbeat(5000, 7)
+    _assert_golden(
+        golden,
+        "heartbeat_request",
+        proto.Frame.request(2, cmd.HEARTBEAT, request),
     )
-    frame = proto.Frame.request(1, cmd.HELLO, payload, cmd.FLAG_ACK_REQ)
-    assert _wire(frame).hex() == golden["hello_request"]["raw_hex"]
 
-
-def test_heartbeat_request_matches_golden(golden: dict[str, dict]) -> None:
-    payload = proto.encode_heartbeat(uptime_ms=5000, state_revision=1)
-    frame = proto.Frame.request(2, cmd.HEARTBEAT, payload, cmd.FLAG_ACK_REQ)
-    assert _wire(frame).hex() == golden["heartbeat_request"]["raw_hex"]
-
-
-def test_heartbeat_response_is_exactly_14_bytes(golden: dict[str, dict]) -> None:
-    payload = struct.pack("<BBIII", 1, 1, 1, 100, 200)
+    payload = struct.pack("<HIII", cmd.OK, 6000, 7, 0)
     assert len(payload) == 14
-    frame = proto.Frame(
-        version=proto.VERSION,
-        flags=cmd.FLAG_RESPONSE,
-        sequence=2,
-        command=cmd.HEARTBEAT,
-        payload=payload,
-    )
-    assert _wire(frame).hex() == golden["heartbeat_response"]["raw_hex"]
-
     parsed = proto.parse_heartbeat_response(payload)
     assert parsed == {
-        "state": 1,
-        "mode": 1,
-        "revision": 1,
-        "tokens_in": 100,
-        "tokens_out": 200,
+        "status": cmd.OK,
+        "t5_uptime_ms": 6000,
+        "applied_revision": 7,
+        "error_flags": 0,
     }
-
-
-def test_mode_set_reason_is_u8(golden: dict[str, dict]) -> None:
-    payload = proto.encode_mode_set(
-        revision=1,
-        mode=SystemMode.NIGHT_EXEC,
-        changed_at_ms=1_700_000_000_000,
-        reason=2,
+    _assert_golden(
+        golden,
+        "heartbeat_response",
+        proto.Frame(proto.VERSION, cmd.FLAG_RESPONSE, 2, cmd.HEARTBEAT, payload),
     )
-    # revision(u32) + mode(u8) + reason(u8) + changed_at_ms(u64) = 14 bytes
-    assert len(payload) == 14
-    frame = proto.Frame.request(3, cmd.MODE_SET, payload, cmd.FLAG_ACK_REQ)
-    assert _wire(frame).hex() == golden["mode_set_night_exec"]["raw_hex"]
+    with pytest.raises(proto.ProtocolError):
+        proto.parse_heartbeat_response(payload + b"\x00")
 
 
-def test_attention_set_matches_golden(golden: dict[str, dict]) -> None:
-    payload = proto.encode_attention_set(
-        revision=1,
-        attention=AttentionFlag.NEED_CONFIRM,
-        confirmation_count=2,
-        short_message="check",
+def test_mode_reason_is_u8_and_work_has_revision(golden: dict[str, dict]) -> None:
+    mode = proto.encode_mode_set(7, SystemMode.NIGHT_EXEC, 1_700_000_000_000, reason=2)
+    assert len(mode) == 14
+    assert struct.unpack("<IBBQ", mode) == (7, 2, 2, 1_700_000_000_000)
+    _assert_golden(
+        golden,
+        "mode_set_night_exec",
+        proto.Frame.request(6, cmd.MODE_SET, mode),
     )
-    frame = proto.Frame.request(4, cmd.ATTENTION_SET, payload, cmd.FLAG_ACK_REQ)
-    assert _wire(frame).hex() == golden["attention_set_need_confirm"]["raw_hex"]
 
-
-def test_work_state_set_has_revision_prefix(golden: dict[str, dict]) -> None:
-    payload = proto.encode_work_state_set(
-        revision=1,
-        work_state=WorkState.RUNNING,
-        progress_permille=500,
-        token_input=100,
-        token_output=50,
-        elapsed_seconds=60,
-        current_task_id=7,
-        current_task_title="demo",
+    work = proto.encode_work_state_set(
+        7, WorkState.RUNNING, 500, 100, 50, 60, 42, "demo"
     )
-    # First 4 bytes must be revision u32
-    assert struct.unpack("<I", payload[:4])[0] == 1
-    frame = proto.Frame.request(5, cmd.WORK_STATE_SET, payload, cmd.FLAG_ACK_REQ)
-    assert _wire(frame).hex() == golden["work_state_set_running"]["raw_hex"]
+    assert struct.unpack("<IBHHIIII", work[:25]) == (7, 2, 500, 0, 100, 50, 60, 42)
+    _assert_golden(
+        golden,
+        "work_state_set_running",
+        proto.Frame.request(8, cmd.WORK_STATE_SET, work),
+    )
 
 
-def test_dashboard_set_matches_golden(golden: dict[str, dict]) -> None:
-    payload = proto.encode_dashboard_set(
-        revision=1,
-        dashboard=DashboardState(
-            revision=1,
+def test_state_payload_encoders_match_golden(golden: dict[str, dict]) -> None:
+    attention = proto.encode_attention_set(7, AttentionFlag.NEED_CONFIRM, 2, "check")
+    _assert_golden(
+        golden,
+        "attention_set_need_confirm",
+        proto.Frame.request(7, cmd.ATTENTION_SET, attention),
+    )
+    dashboard = proto.encode_dashboard_set(
+        7,
+        DashboardState(
+            revision=7,
             urgent_auto=1,
             normal_auto=2,
             urgent_confirm=3,
@@ -128,33 +102,69 @@ def test_dashboard_set_matches_golden(golden: dict[str, dict]) -> None:
             failed_today=6,
         ),
     )
-    frame = proto.Frame.request(6, cmd.DASHBOARD_SET, payload, cmd.FLAG_ACK_REQ)
-    assert _wire(frame).hex() == golden["dashboard_set"]["raw_hex"]
-
-
-def test_ui_action_confirm_matches_golden(golden: dict[str, dict]) -> None:
-    payload = proto.encode_ui_action(
-        action=cmd.ACTION_CONFIRM,
-        object_type=1,
-        object_id=50,
-        value=0,
-        text="",
+    _assert_golden(
+        golden,
+        "dashboard_set",
+        proto.Frame.request(9, cmd.DASHBOARD_SET, dashboard),
     )
-    frame = proto.Frame(
-        version=proto.VERSION,
-        flags=cmd.FLAG_EVENT,
-        sequence=7,
-        command=cmd.UI_ACTION,
-        payload=payload,
+    notice = proto.encode_notice_show(
+        7, 44, 1, 1, 1_700_000_060_000,
+        "Warning", "Pressure input unavailable",
     )
-    assert _wire(frame).hex() == golden["ui_action_confirm"]["raw_hex"]
+    _assert_golden(
+        golden,
+        "notice_show",
+        proto.Frame.request(10, cmd.NOTICE_SHOW, notice),
+    )
 
 
-def test_roundtrip_all_golden_frames(golden: dict[str, dict]) -> None:
+def test_formal_control_and_event_payloads(golden: dict[str, dict]) -> None:
+    ui = proto.encode_ui_action(cmd.ACTION_CONFIRM, cmd.OBJECT_TASK, 42, 0, "")
+    assert proto.parse_ui_action(ui) == (cmd.ACTION_CONFIRM, cmd.OBJECT_TASK, 42, 0, "")
+    _assert_golden(
+        golden,
+        "ui_action_confirm",
+        proto.Frame(
+            proto.VERSION,
+            cmd.FLAG_EVENT | cmd.FLAG_ACK_REQ,
+            15,
+            cmd.UI_ACTION,
+            ui,
+        ),
+    )
+    with pytest.raises(proto.ProtocolError):
+        proto.parse_ui_action(ui[:10])
+
+    _assert_golden(
+        golden,
+        "page_event",
+        proto.Frame(
+            proto.VERSION,
+            cmd.FLAG_EVENT,
+            16,
+            cmd.PAGE_EVENT,
+            proto.encode_page_event(1, 3, 4),
+        ),
+    )
+    _assert_golden(
+        golden,
+        "led_override",
+        proto.Frame.request(17, cmd.LED_OVERRIDE, proto.encode_led_override(1, 1, 500)),
+    )
+    _assert_golden(
+        golden,
+        "backlight_set",
+        proto.Frame.request(18, cmd.BACKLIGHT_SET, proto.encode_backlight_set(80)),
+    )
+
+
+def test_all_21_vectors_roundtrip_and_metadata_match(golden: dict[str, dict]) -> None:
+    assert len(golden) == 21
     for name, entry in golden.items():
-        raw = bytes.fromhex(entry["raw_hex"])
-        # Every wire image must survive COBS unstuff + frame parse + re-stuff.
-        decoded = unstuff_frame(raw)
-        parsed = proto.Frame.parse(decoded)
-        rebuilt = stuff_frame(parsed.raw)
-        assert rebuilt.hex() == entry["raw_hex"], f"roundtrip failed for {name}"
+        wire = bytes.fromhex(entry["raw_hex"])
+        parsed = proto.Frame.parse(unstuff_frame(wire))
+        assert parsed.sequence == entry["sequence"], name
+        assert parsed.command == entry["command"], name
+        assert parsed.flags == entry["flags"], name
+        assert parsed.payload.hex() == entry["payload_hex"], name
+        assert stuff_frame(parsed.raw) == wire, name

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -40,6 +41,8 @@ class UartGateway:
         self._sequence = 0
         self._boot_id = int(time.monotonic() * 1000) & 0xFFFFFFFF
         self._pending: dict[int, asyncio.Future[proto.Frame]] = {}
+        self._event_status: dict[tuple[int, int], int] = {}
+        self._event_order: deque[tuple[int, int]] = deque()
         self._last_applied_revision = 0
         self._panel_online = False
         self._read_task: asyncio.Task[None] | None = None
@@ -176,22 +179,40 @@ class UartGateway:
             return
 
         if frame.command == cmd.UI_ACTION:
+            key = (frame.sequence, frame.command)
+            cached_status = self._event_status.get(key)
+            if cached_status is not None:
+                if frame.flags & cmd.FLAG_ACK_REQ:
+                    await self._send_ack(frame, cached_status)
+                return
+
             try:
                 action, object_type, object_id, value, text = proto.parse_ui_action(frame.payload)
+            except (ValueError, proto.ProtocolError):
+                status = cmd.INVALID_LENGTH
+                self._cache_event_status(key, status)
+            else:
+                # Cache before calling application code. If that code raises
+                # after a partial side effect, a retry still cannot execute it
+                # a second time.
+                status = cmd.OK
+                self._cache_event_status(key, status)
                 if self._on_event:
-                    self._on_event(
-                        UiAction(
-                            action=action,
-                            object_type=object_type,
-                            object_id=object_id,
-                            value=value,
-                            text=text,
+                    try:
+                        self._on_event(
+                            UiAction(
+                                action=action,
+                                object_type=object_type,
+                                object_id=object_id,
+                                value=value,
+                                text=text,
+                            )
                         )
-                    )
-            except Exception:
-                pass
+                    except Exception:
+                        status = cmd.INTERNAL_ERROR
+                        self._event_status[key] = status
             if frame.flags & cmd.FLAG_ACK_REQ:
-                await self._send_ack(frame, cmd.OK)
+                await self._send_ack(frame, status)
             return
 
         # Unknown events are acknowledged (preserving sequence) but ignored.
@@ -210,6 +231,16 @@ class UartGateway:
         )
         self._writer.write(stuff_frame(ack.raw))
 
+    def _cache_event_status(self, key: tuple[int, int], status: int) -> None:
+        if key in self._event_status:
+            self._event_status[key] = status
+            return
+        if len(self._event_order) >= 32:
+            oldest = self._event_order.popleft()
+            self._event_status.pop(oldest, None)
+        self._event_order.append(key)
+        self._event_status[key] = status
+
     async def _heartbeat_loop(self) -> None:
         while True:
             try:
@@ -219,7 +250,11 @@ class UartGateway:
                 try:
                     resp = await self.send(cmd.HEARTBEAT, payload, timeout_ms=200)
                     info = proto.parse_heartbeat_response(resp.payload)
-                    self._last_applied_revision = info["revision"]
+                    if info["status"] != cmd.OK:
+                        raise proto.ProtocolError(
+                            f"heartbeat rejected with status {info['status']}"
+                        )
+                    self._last_applied_revision = info["applied_revision"]
                     if not self._panel_online:
                         self._panel_online = True
                         if self._on_event:
@@ -227,11 +262,10 @@ class UartGateway:
                     if self._on_event:
                         self._on_event(
                             HeartbeatReceived(
-                                state=info["state"],
-                                mode=info["mode"],
-                                revision=info["revision"],
-                                tokens_in=info["tokens_in"],
-                                tokens_out=info["tokens_out"],
+                                status=info["status"],
+                                t5_uptime_ms=info["t5_uptime_ms"],
+                                applied_revision=info["applied_revision"],
+                                error_flags=info["error_flags"],
                             )
                         )
                 except TimeoutError:
