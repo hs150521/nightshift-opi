@@ -11,10 +11,10 @@ Orange Pi 3B 2G control service for the Nightshift desktop agent host.
   - Pin 6 (GND) -> GND
   - Pin 7 (GPIO4_A4) -> digital output
 
-- **T5AI-BOARD UART (T5 P11 header)**
-  - Pin 14 (GND)                -> T5 P11 Pin 13 or 17 (GND)
-  - Pin 28 (GPIO1_A0, UART3_TX) -> T5 P11 Pin 14 (P11, UART0_TX)
-  - Pin 27 (GPIO1_A1, UART3_RX) -> T5 P11 Pin 12 (P10, UART0_RX)
+- **T5AI-BOARD UART (T5 P11 header)** — verified working
+  - Pin 14 (GND)                -> T5 P11 header GND
+  - Pin 28 (GPIO1_A0, UART3_TX) -> T5 P11 header Pin 1 (T5 UART0_RX)
+  - Pin 27 (GPIO1_A1, UART3_RX) -> T5 P11 header Pin 2 (T5 UART0_TX)
 
 > **Why UART3:** UART7 (on pins 15/16) conflicts with the Ethernet GMAC MDIO pins, so it is disabled in the device tree. UART3-M0 uses pins 27/28 (GPIO1_A1/A0) and leaves Ethernet functional.
 

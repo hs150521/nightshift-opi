@@ -45,11 +45,11 @@ def check_gpio() -> None:
 
     print("\n=== Expected wiring ===")
     print("Light sensor -> Pin 7 = gpiochip4 line 4 (GPIO4_A4)")
-    print("T5 GND       -> Pin 14 (GND) -> T5 P11 Pin 13 or 17")
+    print("T5 GND       -> Pin 14 (GND) -> T5 P11 header GND")
     print("T5 TX        -> Pin 27 = gpiochip1 line 1 (GPIO1_A1, UART3_RX)")
-    print("                -> T5 P11 Pin 12 (P10, UART0_RX)")
+    print("                -> T5 P11 header Pin 2 (T5 UART0_TX)")
     print("T5 RX        -> Pin 28 = gpiochip1 line 0 (GPIO1_A0, UART3_TX)")
-    print("                -> T5 P11 Pin 14 (P11, UART0_TX)")
+    print("                -> T5 P11 header Pin 1 (T5 UART0_RX)")
 
 
 def main() -> None:

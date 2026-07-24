@@ -59,7 +59,7 @@ No mocks or stubs are kept in the production code for these items; they are inte
 - [x] Disable cloud-init network management.
 - [x] Reboot — `/dev/ttyS3` confirmed present, eth0 address assigned.
 - [ ] Verify `gpiochip4 line 4` (GPIO4_A4) maps to Pin 7 and the light sensor active level.
-- [ ] Rewire T5 to OPI Pin27/28 (UART3) and verify: OPI Pin28 -> T5 P11 Pin14 (P11, UART0_TX), OPI Pin27 -> T5 P11 Pin12 (P10, UART0_RX), GND -> T5 P11 Pin13/17.
+- [x] Rewire T5 to OPI Pin27/28 (UART3) and verify: OPI Pin28 -> T5 P11 header Pin 1 (T5 UART0_RX), OPI Pin27 -> T5 P11 header Pin 2 (T5 UART0_TX), GND -> T5 P11 header GND. Loopback verified on both sides.
 - [ ] Power on and run a smoke test: light on -> IDLE (warm), light off -> NIGHT_EXEC (blue).
 - [ ] Wire pressure sensor and enable `NIGHTSHIFT_GPIO_SIT_ENABLED`.
 - [ ] Implement `tools/mqtt_debug_client.py` for local debugging.
