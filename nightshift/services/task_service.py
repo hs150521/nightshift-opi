@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from nightshift.domain.models import DashboardState
+
 if TYPE_CHECKING:
     from nightshift.persistence.database import Database
 
@@ -48,7 +50,8 @@ class TaskService:
     ) -> Task:
         conn = self._db.connection
         cursor = await conn.execute(
-            "INSERT INTO tasks (quadrant, state, flags, title, source, created_at_ms, updated_at_ms)"
+            "INSERT INTO tasks"
+            " (quadrant, state, flags, title, source, created_at_ms, updated_at_ms)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (quadrant, TaskState.PENDING, flags, title, source, now_ms, now_ms),
         )
@@ -96,6 +99,50 @@ class TaskService:
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
+
+    async def list_recent(self, *, limit: int = 16) -> list[Task]:
+        """Return the most recently updated tasks in stable display order."""
+        conn = self._db.connection
+        async with conn.execute(
+            "SELECT * FROM tasks ORDER BY updated_at_ms DESC, id DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._row_to_task(row) for row in reversed(rows)]
+
+    async def dashboard(self, *, revision: int) -> DashboardState:
+        """Build the six dashboard counters from persisted task state."""
+        conn = self._db.connection
+        async with conn.execute(
+            "SELECT quadrant, state, COUNT(*) AS count FROM tasks"
+            " GROUP BY quadrant, state"
+        ) as cur:
+            rows = await cur.fetchall()
+
+        active_counts = [0, 0, 0, 0]
+        completed = 0
+        failed = 0
+        for row in rows:
+            state = TaskState(row["state"])
+            count = int(row["count"])
+            if state == TaskState.COMPLETED:
+                completed += count
+            elif state == TaskState.FAILED:
+                failed += count
+            else:
+                quadrant = int(row["quadrant"])
+                if 0 <= quadrant < len(active_counts):
+                    active_counts[quadrant] += count
+
+        return DashboardState(
+            revision=revision,
+            urgent_auto=active_counts[0],
+            normal_auto=active_counts[1],
+            urgent_confirm=active_counts[2],
+            normal_confirm=active_counts[3],
+            completed_today=completed,
+            failed_today=failed,
+        )
 
     async def _transition(
         self, task_id: int, from_state: TaskState, to_state: TaskState, now_ms: int

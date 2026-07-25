@@ -5,16 +5,16 @@ Malformed HELLO must return non-OK and cause no state or session transition.
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from nightshift.domain import commands as cmd
 from nightshift.domain.events import PanelConnectivityChanged
 from nightshift.hardware.uart import protocol as proto
-from nightshift.hardware.uart.codec import stuff_frame
+from nightshift.hardware.uart.codec import unstuff_frame
 from nightshift.hardware.uart.gateway import UartConfig, UartGateway
+from nightshift.hardware.uart.session import Disposition
 
 
 @pytest.fixture
@@ -71,9 +71,7 @@ async def test_valid_hello_triggers_session(gateway: UartGateway) -> None:
     written = gateway._writer.write.call_args_list
     assert len(written) >= 1
     ack_data = written[0][0][0]
-    raw = proto.Frame.parse(
-        __import__("nightshift.hardware.uart.codec", fromlist=["unstuff_frame"]).unstuff_frame(ack_data)
-    )
+    raw = proto.Frame.parse(unstuff_frame(ack_data))
     assert raw.command == cmd.HELLO
     assert raw.flags == cmd.FLAG_RESPONSE
     status = int.from_bytes(raw.payload[:2], "little")
@@ -157,3 +155,40 @@ async def test_new_boot_id_updates_session(gateway: UartGateway) -> None:
     await gateway._dispatch(_make_hello_frame(payload2, seq=2))
     assert gateway.peer_boot_id == 0xBBBBBBBB
     assert len(gateway._hello_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_duplicate_hello_only_acks_and_preserves_session(
+    gateway: UartGateway,
+) -> None:
+    boot_id = 0xAABBCCDD
+    payload = proto.encode_hello(
+        peer_role=0x01,
+        protocol_major=1,
+        protocol_minor=0,
+        boot_id=boot_id,
+        max_payload=1024,
+        capabilities=0x0003,
+        software_version="t5/1.0.0",
+    )
+    await gateway._dispatch(_make_hello_frame(payload, seq=1))
+
+    first = gateway._session.check_action(
+        boot_id, sequence=77, command=cmd.UI_ACTION, payload=b"action"
+    )
+    assert first.disposition == Disposition.EXECUTE
+    assert first.dedup_key is not None
+    assert first.digest is not None
+    gateway._session.record_result(
+        first.dedup_key, first.digest, cmd.OK, b"cached"
+    )
+
+    await gateway._dispatch(_make_hello_frame(payload, seq=2))
+
+    assert gateway.peer_boot_id == boot_id
+    assert len(gateway._hello_calls) == 1
+    replay = gateway._session.check_action(
+        boot_id, sequence=77, command=cmd.UI_ACTION, payload=b"action"
+    )
+    assert replay.disposition == Disposition.REPLAY
+    assert replay.cached_reply == b"cached"

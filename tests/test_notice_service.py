@@ -56,3 +56,13 @@ async def test_ids_never_reused(svc):
     n1 = await svc.create(title="A", now_ms=1000)
     n2 = await svc.create(title="B", now_ms=2000)
     assert n2.id > n1.id
+
+
+async def test_latest_active_skips_dismissed_and_expired(svc):
+    await svc.create(title="Expired", expires_at_ms=1500, now_ms=1000)
+    dismissed = await svc.create(title="Dismissed", now_ms=2000)
+    await svc.dismiss(dismissed.id, now_ms=2500)
+    current = await svc.create(title="Current", expires_at_ms=5000, now_ms=3000)
+
+    assert await svc.latest_active(now_ms=4000) == current
+    assert await svc.latest_active(now_ms=6000) is None

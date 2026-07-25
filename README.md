@@ -1,90 +1,93 @@
-# Nightshift Orange Pi 3B 2G
+# Nightshift Orange Pi 3B
 
-Orange Pi 3B 2G control service for the Nightshift desktop agent host.
-
-> **Note:** This repository originally assumed an Orange Pi 5B. The target board has been corrected to **Orange Pi 3B 2G**. UART defaults below reflect the Orange Pi 3B 40-pin header; always verify on your actual system before running.
-
-## Current wiring
-
-The Opi3B talks to two peripherals: the T5AI-BOARD panel over UART, and the
-ESP32 pressure sensor (`pressure-01`) over MQTT. There is no local GPIO in
-the runtime path — the light sensor has been removed.
-
-- **T5AI-BOARD UART (T5 P11 header)** — verified working
-  - Pin 14 (GND)                -> T5 P11 header GND
-  - Pin 28 (GPIO1_A0, UART3_TX) -> T5 P11 header Pin 1 (T5 UART0_RX)
-  - Pin 27 (GPIO1_A1, UART3_RX) -> T5 P11 header Pin 2 (T5 UART0_TX)
-
-> **Why UART3:** UART7 (on pins 15/16) conflicts with the Ethernet GMAC MDIO pins, so it is disabled in the device tree. UART3-M0 uses pins 27/28 (GPIO1_A1/A0) and leaves Ethernet functional.
-
-## Required overlay
-
-`/boot/extlinux/extlinux.conf` contains:
+Nightshift's authoritative backend for Orange Pi 3B 2G.
 
 ```text
-fdtoverlays /lib/firmware/5.10.0-1012-rockchip/device-tree/rockchip/overlay/rk3566-orangepi-3b-uart3.dtbo
+GPIO4/5/6/7 -> ESP32-S3 -> Wi-Fi AP stillwork -> MQTT
+             -> OPI state/services -> UART3 T5-Link -> T5 panel
 ```
 
-The base device tree (`rk3566-orangepi-3b.dtb`) has also been patched to enable UART3 and disable UART7. Reboot for changes to take effect:
+The OPI does not read pressure GPIO or a light sensor. T5 never uses MQTT.
+Missing/stale pressure input enters safe `IDLE + SENSOR_ERROR`; a valid
+all-released input enters `NIGHT_EXEC` after three seconds, while either
+pressure group enters `DAY_WORK` promptly.
 
-```bash
-sudo reboot
-```
+## Interfaces
 
-After reboot you should see `/dev/ttyS3`.
+- `wlan0`: existing upstream STA, pinned to a 2.4 GHz BSSID so the single radio
+  can host `ap0` on the same channel.
+- `ap0`: `stillwork`, `192.168.51.1/24`, DHCP `.10-.100`.
+- MQTT: `127.0.0.1:1883` for the backend and `192.168.51.1:1884` for ESP32 and
+  the development console. Authentication and ACLs are required.
+- T5: `/dev/ttyS3`, 460800 8-N-1, COBS + CRC-16/CCITT-FALSE.
 
-## Quick start
+Verified wiring:
+
+| Orange Pi | T5 P11 | Direction |
+|---|---|---|
+| Pin 28 / UART3 TX | Pin 1 / P10 / UART0 RX | OPI -> T5 |
+| Pin 27 / UART3 RX | Pin 2 / P11 / UART0 TX | T5 -> OPI |
+| Pin 14 / GND | GND | common ground |
+
+UART7 remains disabled because it conflicts with Ethernet MDIO.
+
+## Local development
 
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-cp .env.example .env
-# Edit .env to match the actual UART device.
+cp deploy/.env.example .env
+pytest -q
 python apps/backend/main.py
 ```
 
-## MQTT / Network
+Keep `.env` local. Development credentials may be plain text there for easy
+debugging, but examples and Git history contain placeholders only.
 
-Mosquitto runs two listeners:
+## OPI deployment
 
-| Listener | Address | Port | Purpose |
-|----------|---------|------|---------|
-| Loopback | 127.0.0.1 | 1883 | Local backend (`nightshift-opi`) |
-| Wired LAN | 192.168.50.1 | 1884 | Remote MQTT device (`t5-device`) |
-
-Anonymous access is disabled on both. Credentials are stored in `/etc/mosquitto/passwd`.
-
-`eth0` is configured as a static host (`192.168.50.1/24`, no gateway, no DNS) for a dedicated wired link to the MQTT device. It is brought up even without a cable plugged in via a `ConfigureWithoutCarrier=yes` drop-in at `/etc/systemd/network/10-netplan-eth0.network.d/carrier.conf`.
-
-To test the loopback listener:
+Create Mosquitto users once (use `-c` only when the password file does not
+already exist), prepare local configuration, then deploy:
 
 ```bash
-mosquitto_pub -h 127.0.0.1 -p 1883 -u nightshift-opi -P nightshift-opi-secret \
-  -t 'nightshift/v1/test' -m 'hello'
+sudo mosquitto_passwd -c /etc/mosquitto/passwd nightshift-opi
+sudo mosquitto_passwd /etc/mosquitto/passwd pressure-01
+sudo mosquitto_passwd /etc/mosquitto/passwd nightshift-console
+
+cp deploy/.env.example .env
+# Fill NIGHTSHIFT_MQTT_PASSWORD with the local backend password.
+
+sudo install -d /etc/hostapd
+sudo install -m 600 deploy/hostapd/hostapd.conf /etc/hostapd/nightshift-ap.conf
+# Fill wpa_passphrase while preserving the existing stillwork credentials.
+
+sudo bash deploy/deploy.sh
 ```
 
-## Verify UART mapping
+The script backs up every replaced system file under
+`/opt/nightshift-backups/<timestamp>`, installs the app at
+`/opt/nightshift-opi`, creates its venv, installs AP/Mosquitto/systemd config,
+and starts `nightshift-ap`, `mosquitto`, and `nightshift-backend`.
+
+Health check:
 
 ```bash
-# Check UARTs
-ls -l /dev/ttyS*
-for u in /proc/device-tree/serial@*; do printf "%s: " "$u"; tr -d '\0' < "$u/status" 2>/dev/null || echo "(no status)"; done
+ip -br addr
+iw dev wlan0 link
+iw dev ap0 info
+systemctl --no-pager --full status nightshift-ap mosquitto nightshift-backend
+ss -lntp
+journalctl -u nightshift-backend -n 100 --no-pager
 ```
 
-You can also run the wiring verification helper:
+## Frozen contracts
+
+- `contracts/uart/commands.yaml`
+- `contracts/uart/golden_vectors.json`
+
+The T5 repository must keep byte-identical copies. Check with:
 
 ```bash
-sudo .venv/bin/python tools/verify_wiring.py
+python tools/check_cross_repo_contract.py --t5-path ../nightshift-t5
 ```
-
-## Protocol contracts
-
-Shared with the T5 firmware:
-
-- `contracts/uart/commands.yaml` — command IDs and payload schemas.
-- `contracts/uart/golden_vectors.json` — canonical byte sequences for validation.
-
-## TODO
-
-See `TODO.md` for hardware and software capabilities that are not yet wired or implemented.

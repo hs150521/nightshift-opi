@@ -7,11 +7,21 @@ from nightshift.domain.commands import (
     ACTION_DISMISS_NOTICE,
     ACTION_REJECT,
     ACTION_RETRY,
+    ATTENTION_SET,
+    DASHBOARD_SET,
+    MODE_SET,
     NOT_FOUND,
     NOT_READY,
+    NOTICE_SHOW,
     OBJ_NOTICE,
     OBJ_TASK,
     OK,
+    STATE_SYNC_BEGIN,
+    STATE_SYNC_END,
+    TASK_ITEM,
+    TASK_LIST_BEGIN,
+    TASK_LIST_END,
+    WORK_STATE_SET,
 )
 from nightshift.domain.events import UiAction
 from nightshift.domain.models import AttentionFlag
@@ -131,3 +141,48 @@ async def test_no_db_returns_not_ready():
     event = _ui_action(ACTION_CONFIRM, OBJ_TASK, 1)
     status, _ = await orch._handle_ui_action(event)
     assert status == NOT_READY
+
+
+async def test_full_sync_sends_database_snapshot(orchestrator, db):
+    task_svc = orchestrator._task_service
+    notice_svc = orchestrator._notice_service
+    await task_svc.create(quadrant=2, title="Approve", source="test", now_ms=1000)
+    await notice_svc.create(title="Heads up", body="Review", now_ms=2000)
+    sent = []
+
+    async def capture(command, payload=b"", **kwargs):
+        sent.append((command, payload))
+        return b""
+
+    orchestrator._uart.send = capture
+    await orchestrator._full_sync()
+
+    assert [command for command, _ in sent] == [
+        STATE_SYNC_BEGIN,
+        MODE_SET,
+        ATTENTION_SET,
+        WORK_STATE_SET,
+        DASHBOARD_SET,
+        NOTICE_SHOW,
+        TASK_LIST_BEGIN,
+        TASK_ITEM,
+        TASK_LIST_END,
+        STATE_SYNC_END,
+    ]
+    assert orchestrator.dashboard.urgent_confirm == 1
+
+
+async def test_full_sync_does_not_commit_partial_snapshot(orchestrator):
+    sent = []
+
+    async def fail_on_attention(command, payload=b"", **kwargs):
+        sent.append(command)
+        if command == ATTENTION_SET:
+            raise OSError("link lost")
+        return b""
+
+    orchestrator._uart.send = fail_on_attention
+    await orchestrator._full_sync()
+
+    assert sent == [STATE_SYNC_BEGIN, MODE_SET, ATTENTION_SET]
+    assert STATE_SYNC_END not in sent

@@ -5,12 +5,17 @@
 user nightshift-opi
 topic readwrite nightshift/#
 
-# pressure-01 (ESP32 pressure sensor): publish to its sensor namespace only
+# pressure-01 (ESP32 pressure sensor): publish only the frozen device topics
 user pressure-01
-topic write nightshift/v1/sensor/pressure/pressure-01/#
-topic read nightshift/v1/sensor/pressure/pressure-01/command
+topic write nightshift/v1/sensor/pressure/pressure-01/availability
+topic write nightshift/v1/sensor/pressure/pressure-01/state
+topic write nightshift/v1/sensor/pressure/pressure-01/telemetry
 
-# t5-device (wired T5 display): limited access
-user t5-device
-topic write nightshift/v1/t5/#
-topic read nightshift/v1/commands/#
+# Development console: observe OPI state and command only this node.
+user nightshift-console
+topic read nightshift/v1/opi/opi3b01/availability
+topic read nightshift/v1/opi/opi3b01/state
+topic read nightshift/v1/opi/opi3b01/event
+topic read nightshift/v1/opi/opi3b01/telemetry
+topic write nightshift/v1/opi/opi3b01/command
+topic read nightshift/v1/opi/opi3b01/reply/nightshift-console

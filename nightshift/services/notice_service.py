@@ -83,6 +83,19 @@ class NoticeService:
             row = await cur.fetchone()
             return row[0] if row else 0
 
+    async def latest_active(self, *, now_ms: int) -> Notice | None:
+        """Return the newest non-dismissed, non-expired notice."""
+        conn = self._db.connection
+        async with conn.execute(
+            "SELECT * FROM notices"
+            " WHERE dismissed_at_ms IS NULL"
+            " AND (expires_at_ms IS NULL OR expires_at_ms > ?)"
+            " ORDER BY created_at_ms DESC, id DESC LIMIT 1",
+            (now_ms,),
+        ) as cur:
+            row = await cur.fetchone()
+        return self._row_to_notice(row) if row is not None else None
+
     @staticmethod
     def _row_to_notice(row: object) -> Notice:
         return Notice(

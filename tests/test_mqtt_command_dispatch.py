@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-from nightshift.domain.models import WorkState
 from nightshift.domain.pressure_mock import MockPressureSource
 from nightshift.hardware.uart.gateway import UartConfig
 from nightshift.integrations.mqtt.command_handler import MqttCommandHandler
@@ -152,6 +151,63 @@ async def test_idempotency_returns_cached_reply(handler, orchestrator):
     _, reply2 = r2
     assert reply1.ok == reply2.ok
     assert reply1.request_id == reply2.request_id
+
+
+async def test_same_request_id_with_different_command_conflicts(
+    handler, orchestrator
+):
+    task = await orchestrator._task_service.create(
+        quadrant=0, title="T", now_ms=1000
+    )
+    request_id = "92345678-1234-1234-1234-123456789abc"
+    original = _cmd("task.confirm", {"task_id": task.id}, request_id)
+    changed = _cmd("task.reject", {"task_id": task.id}, request_id)
+
+    first = await handler.handle(original)
+    conflict = await handler.handle(changed)
+    replay = await handler.handle(original)
+
+    assert first is not None and conflict is not None and replay is not None
+    assert first[1].ok is True
+    assert conflict[1].ok is False
+    assert conflict[1].code == "state_conflict"
+    assert replay[1] == first[1]
+
+
+async def test_mqtt_confirmation_updates_authoritative_state(
+    handler, orchestrator
+):
+    first = await orchestrator._task_service.create(
+        quadrant=0, title="A", now_ms=1000
+    )
+    await orchestrator._task_service.create(
+        quadrant=0, title="B", now_ms=1000
+    )
+    revision = orchestrator.state.revision
+
+    result = await handler.handle(
+        _cmd(
+            "task.confirm",
+            {"task_id": first.id},
+            "a2345678-1234-1234-1234-123456789abc",
+        )
+    )
+
+    assert result is not None and result[1].ok is True
+    assert orchestrator.state.confirmation_count == 1
+    assert orchestrator.state.revision == revision + 1
+
+
+async def test_boolean_task_id_is_rejected(handler):
+    result = await handler.handle(
+        _cmd(
+            "task.confirm",
+            {"task_id": True},
+            "b2345678-1234-1234-1234-123456789abc",
+        )
+    )
+    assert result is not None
+    assert result[1].code == "invalid_argument"
 
 
 async def test_services_none_returns_not_ready():

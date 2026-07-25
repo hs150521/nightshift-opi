@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 from collections.abc import Callable, Coroutine
@@ -32,6 +34,7 @@ _CACHE_TTL_MS = 60_000
 
 @dataclass
 class _CachedReply:
+    digest: str
     reply: ReplyMessage
     expires_at_ms: int
 
@@ -74,9 +77,18 @@ class MqttCommandHandler:
             )
             return envelope.reply_to, reply
 
+        digest = self._command_digest(envelope)
         cached = self._cache.get(envelope.request_id)
         if cached is not None:
             if now <= cached.expires_at_ms:
+                if cached.digest != digest:
+                    reply = self._make_reply(
+                        envelope,
+                        ok=False,
+                        code="state_conflict",
+                        message="request_id was already used for a different command",
+                    )
+                    return envelope.reply_to, reply
                 log.info(
                     "mqtt: returning cached reply for request_id=%s",
                     envelope.request_id,
@@ -98,6 +110,7 @@ class MqttCommandHandler:
         )
 
         self._cache[envelope.request_id] = _CachedReply(
+            digest=digest,
             reply=reply,
             expires_at_ms=self._now_ms() + _CACHE_TTL_MS,
         )
@@ -146,7 +159,7 @@ class MqttCommandHandler:
         if svc is None:
             return False, "not_ready", "services not initialized", {}
         task_id = envelope.args.get("task_id")
-        if not isinstance(task_id, int):
+        if type(task_id) is not int:
             return False, "invalid_argument", "task_id must be an integer", {}
         from nightshift.domain.commands import OBJ_TASK
         from nightshift.services.confirmation_service import ConfirmationError
@@ -156,6 +169,9 @@ class MqttCommandHandler:
             result = await svc.confirm(OBJ_TASK, task_id, now_ms=now_ms)
         except ConfirmationError as exc:
             return False, "not_found", str(exc), {}
+        await self._orchestrator._update_confirmation_count(
+            result.pending_count, now_ms
+        )
         return True, "ok", "task confirmed", {"pending_count": result.pending_count}
 
     async def _handle_task_reject(
@@ -165,7 +181,7 @@ class MqttCommandHandler:
         if svc is None:
             return False, "not_ready", "services not initialized", {}
         task_id = envelope.args.get("task_id")
-        if not isinstance(task_id, int):
+        if type(task_id) is not int:
             return False, "invalid_argument", "task_id must be an integer", {}
         from nightshift.domain.commands import OBJ_TASK
         from nightshift.services.confirmation_service import ConfirmationError
@@ -175,6 +191,9 @@ class MqttCommandHandler:
             result = await svc.reject(OBJ_TASK, task_id, now_ms=now_ms)
         except ConfirmationError as exc:
             return False, "not_found", str(exc), {}
+        await self._orchestrator._update_confirmation_count(
+            result.pending_count, now_ms
+        )
         return True, "ok", "task rejected", {"pending_count": result.pending_count}
 
     async def _handle_task_retry(
@@ -184,28 +203,33 @@ class MqttCommandHandler:
         if task_svc is None:
             return False, "not_ready", "services not initialized", {}
         task_id = envelope.args.get("task_id")
-        if not isinstance(task_id, int):
+        if type(task_id) is not int:
             return False, "invalid_argument", "task_id must be an integer", {}
         now_ms = self._now_ms()
         task = await task_svc.retry(task_id, now_ms=now_ms)
         if task is None:
             return False, "not_found", f"task {task_id} not in failed state", {}
-        return True, "ok", "task retried", {"task_id": task.id}
+        pending_count = await task_svc.count_pending()
+        await self._orchestrator._update_confirmation_count(
+            pending_count, now_ms
+        )
+        return True, "ok", "task retried", {
+            "task_id": task.id,
+            "pending_count": pending_count,
+        }
 
     async def _handle_notice_dismiss(
         self, envelope: CommandEnvelope
     ) -> tuple[bool, str, str, dict[str, Any]]:
-        notice_svc = self._orchestrator._notice_service
-        if notice_svc is None:
+        if self._orchestrator._notice_service is None:
             return False, "not_ready", "services not initialized", {}
         notice_id = envelope.args.get("notice_id")
-        if not isinstance(notice_id, int):
+        if type(notice_id) is not int:
             return False, "invalid_argument", "notice_id must be an integer", {}
         now_ms = self._now_ms()
-        notice = await notice_svc.dismiss(notice_id, now_ms=now_ms)
-        if notice is None:
+        if not await self._orchestrator.dismiss_notice(notice_id, now_ms=now_ms):
             return False, "not_found", f"notice {notice_id} not active", {}
-        return True, "ok", "notice dismissed", {"notice_id": notice.id}
+        return True, "ok", "notice dismissed", {"notice_id": notice_id}
 
     def _make_reply(
         self,
@@ -230,3 +254,20 @@ class MqttCommandHandler:
         ]
         for rid in expired:
             del self._cache[rid]
+
+    @staticmethod
+    def _command_digest(envelope: CommandEnvelope) -> str:
+        normalized = json.dumps(
+            {
+                "client_id": envelope.client_id,
+                "reply_to": envelope.reply_to,
+                "sent_at_ms": envelope.sent_at_ms,
+                "ttl_ms": envelope.ttl_ms,
+                "command": envelope.command,
+                "args": envelope.args,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(normalized).hexdigest()

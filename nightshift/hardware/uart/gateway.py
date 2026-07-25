@@ -20,8 +20,6 @@ from nightshift.domain.events import (
 from nightshift.hardware.uart import protocol as proto
 from nightshift.hardware.uart.codec import stuff_frame, unstuff_frame
 from nightshift.hardware.uart.session import (
-    DedupKey,
-    DedupResult,
     Disposition,
     UartSession,
 )
@@ -245,14 +243,15 @@ class UartGateway:
 
             await self._send_ack(frame, cmd.OK)
             previous_boot_id = self._session.boot_id
-            if previous_boot_id != hello.boot_id:
+            is_new_session = previous_boot_id != hello.boot_id
+            if is_new_session:
                 self._session.reset(hello.boot_id)
                 if self._on_peer_boot_id_change:
                     try:
                         self._on_peer_boot_id_change(previous_boot_id, hello.boot_id)
                     except Exception:
                         logger.exception("on_peer_boot_id_change failed")
-            if self._on_panel_hello:
+            if is_new_session and self._on_panel_hello:
                 try:
                     result = self._on_panel_hello()
                     if asyncio.iscoroutine(result):

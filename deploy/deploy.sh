@@ -12,11 +12,18 @@ set -euo pipefail
 INSTALL_DIR="/opt/nightshift-opi"
 DATA_DIR="/var/lib/nightshift"
 BACKUP_DIR="/opt/nightshift-backups/$(date +%Y%m%d-%H%M%S)"
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="${NIGHTSHIFT_PYTHON:-python3.11}"
 
 # --- Preflight checks ---
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "ERROR: Must run as root." >&2
+    exit 1
+fi
+
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+    echo "ERROR: $PYTHON_BIN is required (override with NIGHTSHIFT_PYTHON)." >&2
     exit 1
 fi
 
@@ -39,15 +46,28 @@ if grep -q "CHANGE_ME" /etc/hostapd/nightshift-ap.conf 2>/dev/null; then
     exit 1
 fi
 
+if [ ! -f "$INSTALL_DIR/.env" ] && [ ! -f "$SOURCE_DIR/.env" ]; then
+    echo "ERROR: local .env missing." >&2
+    echo "  cp deploy/.env.example .env" >&2
+    echo "  Edit .env with the local MQTT password, then rerun deploy.sh." >&2
+    exit 1
+fi
+
 # --- Backup ---
 
 echo "==> Creating backup at $BACKUP_DIR"
 mkdir -p "$BACKUP_DIR"
 for f in /etc/mosquitto/conf.d/nightshift.conf \
          /etc/mosquitto/acl \
+         /etc/mosquitto/passwd \
          /etc/nightshift-ap/dnsmasq.conf \
+         /etc/hostapd/nightshift-ap.conf \
          /etc/systemd/system/nightshift-backend.service \
-         /etc/systemd/system/nightshift-ap.service; do
+         /etc/systemd/system/nightshift-ap.service \
+         /usr/local/sbin/nightshift-ap-start \
+         /usr/local/sbin/nightshift-ap-down \
+         "$INSTALL_DIR/.env" \
+         "$DATA_DIR/nightshift.db"; do
     if [ -f "$f" ]; then
         mkdir -p "$BACKUP_DIR/$(dirname "$f")"
         cp "$f" "$BACKUP_DIR/$f"
@@ -55,31 +75,53 @@ for f in /etc/mosquitto/conf.d/nightshift.conf \
 done
 echo "    Backup complete."
 
-# --- Data directory ---
+# --- Application and data ---
 
-echo "==> Creating data directory"
-mkdir -p "$DATA_DIR"
+echo "==> Installing application at $INSTALL_DIR"
+mkdir -p "$INSTALL_DIR" "$DATA_DIR"
+if [ "$SOURCE_DIR" != "$INSTALL_DIR" ]; then
+    cp -a "$SOURCE_DIR/apps" "$INSTALL_DIR/"
+    cp -a "$SOURCE_DIR/contracts" "$INSTALL_DIR/"
+    cp -a "$SOURCE_DIR/nightshift" "$INSTALL_DIR/"
+    cp -a "$SOURCE_DIR/tools" "$INSTALL_DIR/"
+    cp -a "$SOURCE_DIR/pyproject.toml" "$INSTALL_DIR/"
+    cp -a "$SOURCE_DIR/README.md" "$INSTALL_DIR/"
+    if [ -f "$SOURCE_DIR/.env" ]; then
+        install -m 0600 "$SOURCE_DIR/.env" "$INSTALL_DIR/.env"
+    fi
+fi
 chown ubuntu:ubuntu "$DATA_DIR"
+chown -R ubuntu:ubuntu "$INSTALL_DIR"
+
+if [ ! -x "$INSTALL_DIR/.venv/bin/python" ]; then
+    sudo -u ubuntu "$PYTHON_BIN" -m venv "$INSTALL_DIR/.venv"
+fi
+sudo -u ubuntu "$INSTALL_DIR/.venv/bin/pip" install -e "$INSTALL_DIR"
 
 # --- dnsmasq config for AP ---
 
-echo "==> Installing AP dnsmasq config"
+echo "==> Installing AP service"
 mkdir -p /etc/nightshift-ap
-cp deploy/dnsmasq/dnsmasq.conf /etc/nightshift-ap/dnsmasq.conf
+cp "$SOURCE_DIR/deploy/dnsmasq/dnsmasq.conf" /etc/nightshift-ap/dnsmasq.conf
+install -m 0755 "$SOURCE_DIR/deploy/scripts/nightshift-ap-start" /usr/local/sbin/nightshift-ap-start
+install -m 0755 "$SOURCE_DIR/deploy/scripts/nightshift-ap-down" /usr/local/sbin/nightshift-ap-down
+install -m 0644 "$SOURCE_DIR/deploy/systemd/nightshift-ap.service" /etc/systemd/system/nightshift-ap.service
 
 # --- Mosquitto config ---
 
 echo "==> Installing mosquitto config"
-cp deploy/mosquitto/mosquitto.conf /etc/mosquitto/conf.d/nightshift.conf
-cp deploy/mosquitto/acl /etc/mosquitto/acl
-systemctl restart mosquitto
+cp "$SOURCE_DIR/deploy/mosquitto/mosquitto.conf" /etc/mosquitto/conf.d/nightshift.conf
+cp "$SOURCE_DIR/deploy/mosquitto/acl" /etc/mosquitto/acl
 
 # --- systemd service ---
 
 echo "==> Installing systemd service"
-cp deploy/systemd/nightshift-backend.service /etc/systemd/system/
+cp "$SOURCE_DIR/deploy/systemd/nightshift-backend.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable nightshift-backend
+systemctl enable nightshift-ap mosquitto nightshift-backend
+systemctl restart nightshift-ap
+systemctl restart mosquitto
+systemctl restart nightshift-backend
 
 # --- Done ---
 
@@ -87,6 +129,4 @@ echo "==> Deployment complete."
 echo "    Backups at: $BACKUP_DIR"
 echo "    To rollback: cp -a $BACKUP_DIR/* / && systemctl daemon-reload"
 echo ""
-echo "    Start services:"
-echo "      systemctl restart nightshift-ap"
-echo "      systemctl restart nightshift-backend"
+echo "    Services started: nightshift-ap, mosquitto, nightshift-backend"

@@ -43,12 +43,19 @@ from nightshift.persistence.database import Database
 from nightshift.services.confirmation_service import ConfirmationError, ConfirmationService
 from nightshift.services.executor_service import ExecutorError, ExecutorService
 from nightshift.services.notice_service import NoticeService
-from nightshift.services.task_service import TaskService
+from nightshift.services.task_service import TaskService, TaskState
 
 logger = structlog.get_logger()
 
 StateListener = Callable[[SystemState], Coroutine[Any, Any, None]]
 EventListener = Callable[[DomainEvent], Coroutine[Any, Any, None]]
+
+_TASK_STATE_TO_BYTE = {
+    TaskState.PENDING: cmd.WORK_STOPPED,
+    TaskState.ACTIVE: cmd.WORK_RUNNING,
+    TaskState.COMPLETED: cmd.WORK_COMPLETED,
+    TaskState.FAILED: cmd.WORK_FAILED,
+}
 
 
 class NightshiftOrchestrator:
@@ -117,6 +124,10 @@ class NightshiftOrchestrator:
     def state(self) -> SystemState:
         return self._state
 
+    @property
+    def dashboard(self) -> DashboardState:
+        return self._dashboard
+
     async def start(self) -> None:
         await self._uart.start()
         self._tick_task = asyncio.create_task(self._tick_loop())
@@ -139,7 +150,10 @@ class NightshiftOrchestrator:
         try:
             new_state = self._executor_service.pause()
         except ExecutorError:
-            logger.warning("pause_executor_invalid_transition", current=self._executor_service.state.value)
+            logger.warning(
+                "pause_executor_invalid_transition",
+                current=self._executor_service.state.value,
+            )
             return
         self._state = self._state.evolve(
             work_state=new_state,
@@ -151,7 +165,10 @@ class NightshiftOrchestrator:
         try:
             new_state = self._executor_service.resume()
         except ExecutorError:
-            logger.warning("resume_executor_invalid_transition", current=self._executor_service.state.value)
+            logger.warning(
+                "resume_executor_invalid_transition",
+                current=self._executor_service.state.value,
+            )
             return
         self._state = self._state.evolve(
             work_state=new_state,
@@ -161,6 +178,19 @@ class NightshiftOrchestrator:
 
     async def resync_panel(self) -> None:
         await self._full_sync()
+
+    async def dismiss_notice(self, notice_id: int, *, now_ms: int | None = None) -> bool:
+        if self._notice_service is None:
+            return False
+        effective_now = (
+            now_ms if now_ms is not None else int(time.monotonic() * 1000)
+        )
+        notice = await self._notice_service.dismiss(notice_id, now_ms=effective_now)
+        if notice is None:
+            return False
+        self._state = self._state.evolve(updated_at_ms=effective_now)
+        await self._full_sync()
+        return True
 
     async def on_pressure_updated(self) -> None:
         """Called by the pressure adapter after each new sample or availability flip."""
@@ -242,33 +272,36 @@ class NightshiftOrchestrator:
 
     async def _publish_state(self) -> None:
         try:
-            await self._uart.send(
-                cmd.MODE_SET,
-                proto.encode_mode_set(
-                    self._state.revision,
-                    self._state.mode,
-                    self._state.updated_at_ms,
-                ),
-            )
-            await self._uart.send(
-                cmd.ATTENTION_SET,
-                proto.encode_attention_set(
-                    self._state.revision,
-                    self._state.attention,
-                    self._state.confirmation_count,
-                ),
-            )
-            await self._uart.send(
-                cmd.WORK_STATE_SET,
-                proto.encode_work_state_set(
-                    revision=self._state.revision,
-                    work_state=self._state.work_state,
-                ),
-            )
+            await self._send_core_state()
         except Exception as exc:
             logger.warning("publish_state_failed", error=str(exc))
 
         await self._notify_state_listeners(self._state)
+
+    async def _send_core_state(self) -> None:
+        await self._uart.send(
+            cmd.MODE_SET,
+            proto.encode_mode_set(
+                self._state.revision,
+                self._state.mode,
+                self._state.updated_at_ms,
+            ),
+        )
+        await self._uart.send(
+            cmd.ATTENTION_SET,
+            proto.encode_attention_set(
+                self._state.revision,
+                self._state.attention,
+                self._state.confirmation_count,
+            ),
+        )
+        await self._uart.send(
+            cmd.WORK_STATE_SET,
+            proto.encode_work_state_set(
+                revision=self._state.revision,
+                work_state=self._state.work_state,
+            ),
+        )
 
     async def _notify_state_listeners(self, state: SystemState) -> None:
         for listener in self._state_listeners:
@@ -285,18 +318,88 @@ class NightshiftOrchestrator:
                 logger.exception("event_listener_failed")
 
     async def _full_sync(self) -> None:
+        async with self._lock:
+            await self._full_sync_locked()
+
+    async def _full_sync_locked(self) -> None:
         try:
+            tasks = (
+                await self._task_service.list_recent(limit=16)
+                if self._task_service is not None
+                else []
+            )
+            if self._task_service is not None:
+                self._dashboard = await self._task_service.dashboard(
+                    revision=self._state.revision
+                )
+            else:
+                self._dashboard = DashboardState(revision=self._state.revision)
+            notice = (
+                await self._notice_service.latest_active(
+                    now_ms=int(time.monotonic() * 1000)
+                )
+                if self._notice_service is not None
+                else None
+            )
+
             await self._uart.send(
                 cmd.STATE_SYNC_BEGIN,
                 proto.encode_state_sync_begin(self._state.revision, reason=0),
             )
-            await self._publish_state()
+            await self._send_core_state()
+            await self._uart.send(
+                cmd.DASHBOARD_SET,
+                proto.encode_dashboard_set(self._state.revision, self._dashboard),
+            )
+            if notice is not None:
+                await self._uart.send(
+                    cmd.NOTICE_SHOW,
+                    proto.encode_notice_show(
+                        revision=self._state.revision,
+                        notice_id=notice.id,
+                        severity=notice.flags & 0x03,
+                        flags=notice.flags,
+                        expires_at_ms=notice.expires_at_ms or 0,
+                        title=notice.title,
+                        body=notice.body,
+                    ),
+                )
+            await self._uart.send(
+                cmd.TASK_LIST_BEGIN,
+                proto.encode_task_list_begin(
+                    revision=self._state.revision,
+                    list_type=0,
+                    item_count=len(tasks),
+                ),
+            )
+            for task in tasks:
+                await self._uart.send(
+                    cmd.TASK_ITEM,
+                    proto.encode_task_item(
+                        revision=self._state.revision,
+                        task_id=task.id,
+                        quadrant=task.quadrant,
+                        task_state=_TASK_STATE_TO_BYTE[task.state],
+                        flags=task.flags,
+                        title=task.title,
+                        source=task.source,
+                    ),
+                )
+            await self._uart.send(
+                cmd.TASK_LIST_END,
+                proto.encode_task_list_end(
+                    revision=self._state.revision,
+                    list_crc32=0,
+                ),
+            )
             await self._uart.send(
                 cmd.STATE_SYNC_END,
                 proto.encode_state_sync_end(self._state.revision, snapshot_crc32=0),
             )
         except Exception as exc:
             logger.warning("full_sync_failed", error=str(exc))
+        finally:
+            await self._notify_state_listeners(self._state)
 
     def _on_event(self, event: DomainEvent) -> None:
         if isinstance(event, HeartbeatReceived):
@@ -414,8 +517,7 @@ class NightshiftOrchestrator:
         if self._notice_service is None:
             return cmd.NOT_READY, b""
         now_ms = int(time.monotonic() * 1000)
-        notice = await self._notice_service.dismiss(event.object_id, now_ms=now_ms)
-        if notice is None:
+        if not await self.dismiss_notice(event.object_id, now_ms=now_ms):
             return cmd.NOT_FOUND, b""
         return cmd.OK, b""
 
@@ -430,7 +532,7 @@ class NightshiftOrchestrator:
             attention=attention,
             updated_at_ms=now_ms,
         )
-        await self._publish_state()
+        await self._full_sync()
 
     async def _on_panel_hello(self) -> None:
         await self._full_sync()

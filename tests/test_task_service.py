@@ -88,3 +88,25 @@ async def test_count_pending(svc):
     t3 = await svc.create(quadrant=0, title="C", now_ms=3000)
     await svc.confirm(t3.id, now_ms=4000)
     assert await svc.count_pending() == 2
+
+
+async def test_recent_tasks_and_dashboard_come_from_database(svc):
+    urgent = await svc.create(quadrant=0, title="Urgent", now_ms=1000)
+    confirm = await svc.create(quadrant=2, title="Confirm", now_ms=2000)
+    done = await svc.create(quadrant=1, title="Done", now_ms=3000)
+    failed = await svc.create(quadrant=3, title="Failed", now_ms=4000)
+    await svc.confirm(done.id, now_ms=5000)
+    await svc.complete(done.id, now_ms=6000)
+    await svc.confirm(failed.id, now_ms=7000)
+    await svc.fail(failed.id, now_ms=8000)
+
+    recent = await svc.list_recent(limit=3)
+    assert [task.id for task in recent] == [confirm.id, done.id, failed.id]
+
+    dashboard = await svc.dashboard(revision=9)
+    assert dashboard.revision == 9
+    assert dashboard.urgent_auto == 1
+    assert dashboard.urgent_confirm == 1
+    assert dashboard.completed_today == 1
+    assert dashboard.failed_today == 1
+    assert urgent.id == 1

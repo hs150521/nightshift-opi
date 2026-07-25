@@ -107,11 +107,11 @@ def parse_command(payload: bytes | str) -> CommandEnvelope:
         raise SchemaError("invalid_argument", "reply_to is required")
 
     sent_at_ms = obj.get("sent_at_ms")
-    if not isinstance(sent_at_ms, int):
+    if type(sent_at_ms) is not int:
         raise SchemaError("invalid_argument", "sent_at_ms must be an integer")
 
     ttl_ms = obj.get("ttl_ms")
-    if not isinstance(ttl_ms, int) or ttl_ms <= 0:
+    if type(ttl_ms) is not int or ttl_ms <= 0:
         raise SchemaError("invalid_argument", "ttl_ms must be a positive integer")
 
     command = obj.get("command", "")

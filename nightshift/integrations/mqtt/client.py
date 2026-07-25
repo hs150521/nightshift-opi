@@ -83,7 +83,9 @@ class MqttClient:
     async def on_state_changed(self, state: SystemState) -> None:
         if self._publisher is not None:
             try:
-                await self._publisher.publish_state(state)
+                await self._publisher.publish_state(
+                    state, dashboard=self._orchestrator.dashboard
+                )
             except Exception:
                 log.exception("mqtt: failed to publish state")
 
@@ -212,7 +214,10 @@ class MqttClient:
                 started_at_ms=self._started_at_ms,
             )
 
-            await self._publisher.publish_state(self._orchestrator.state)
+            await self._publisher.publish_state(
+                self._orchestrator.state,
+                dashboard=self._orchestrator.dashboard,
+            )
 
             log.info("mqtt: connected and subscribed")
 
