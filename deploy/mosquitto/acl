@@ -1,0 +1,16 @@
+# Nightshift MQTT ACL
+# Used by all listeners (per_listener_settings applies auth per-listener).
+
+# nightshift-opi (local backend): full access to the nightshift namespace
+user nightshift-opi
+topic readwrite nightshift/#
+
+# pressure-01 (ESP32 pressure sensor): publish to its sensor namespace only
+user pressure-01
+topic write nightshift/v1/sensor/pressure/pressure-01/#
+topic read nightshift/v1/sensor/pressure/pressure-01/command
+
+# t5-device (wired T5 display): limited access
+user t5-device
+topic write nightshift/v1/t5/#
+topic read nightshift/v1/commands/#

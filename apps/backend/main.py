@@ -11,7 +11,10 @@ import structlog
 from nightshift.config import load_config
 from nightshift.domain.pressure_mock import MockPressureSource
 from nightshift.integrations.mqtt.client import MqttClient
-from nightshift.integrations.mqtt.pressure_adapter import PressureMqttAdapter
+from nightshift.integrations.mqtt.pressure_adapter import (
+    PressureAdapterConfig,
+    PressureMqttAdapter,
+)
 from nightshift.persistence.database import Database
 from nightshift.services.orchestrator import NightshiftOrchestrator
 
@@ -27,10 +30,18 @@ async def main() -> None:
     db = Database(db_path)
     await db.open()
 
+    pressure_adapter: PressureMqttAdapter | None = None
     if config.mqtt.enabled:
-        pressure_source = PressureMqttAdapter(
+        adapter_config = PressureAdapterConfig(
             device_id=config.pressure.client_id,
+            broker_host=config.mqtt.host,
+            broker_port=config.mqtt.port,
+            username=config.mqtt.username,
+            password=config.mqtt.password,
+            keepalive=config.mqtt.keepalive,
         )
+        pressure_adapter = PressureMqttAdapter(config=adapter_config)
+        pressure_source = pressure_adapter
     else:
         pressure_source = MockPressureSource()
 
@@ -42,8 +53,8 @@ async def main() -> None:
         stale_ms=config.pressure.stale_ms,
     )
 
-    if isinstance(pressure_source, PressureMqttAdapter):
-        pressure_source.on_updated = orchestrator.on_pressure_updated
+    if pressure_adapter is not None:
+        pressure_adapter.on_updated = orchestrator.on_pressure_updated
 
     mqtt_client: MqttClient | None = None
     if config.mqtt.enabled:
@@ -58,6 +69,9 @@ async def main() -> None:
         loop.add_signal_handler(sig, stop_event.set)
 
     await orchestrator.start()
+
+    if pressure_adapter is not None:
+        await pressure_adapter.start()
 
     if mqtt_client is not None:
         await mqtt_client.start()
@@ -76,6 +90,8 @@ async def main() -> None:
 
     await stop_event.wait()
 
+    if pressure_adapter is not None:
+        await pressure_adapter.stop()
     if mqtt_client is not None:
         await mqtt_client.stop()
     await orchestrator.stop()
