@@ -3,8 +3,9 @@
 # Run as root on the Orange Pi 3B.
 #
 # IMPORTANT:
-# - Does NOT modify wlan0, SSH, default route, or DNS.
-# - Uses ap0 virtual interface for the AP (shared radio with wlan0).
+# - Does not replace wlan0, SSH, the default route, or DNS configuration.
+# - Installs brcmfmac/wpa_supplicant drop-ins needed for stable shared-radio use.
+# - Uses the ap0 virtual interface for the AP (shared radio with wlan0).
 # - Requires local secrets to exist before installing configs.
 # - Backs up all modified files before overwriting.
 set -euo pipefail
@@ -60,11 +61,16 @@ mkdir -p "$BACKUP_DIR"
 for f in /etc/mosquitto/conf.d/nightshift.conf \
          /etc/mosquitto/acl \
          /etc/mosquitto/passwd \
+         /etc/systemd/system/mosquitto.service.d/nightshift-network.conf \
          /etc/nightshift-ap/dnsmasq.conf \
          /etc/hostapd/nightshift-ap.conf \
          /etc/systemd/system/nightshift-backend.service \
          /etc/systemd/system/nightshift-ap.service \
+         /etc/sysctl.d/90-nightshift-ap.conf \
+         /etc/modprobe.d/90-nightshift-brcmfmac.conf \
+         /etc/systemd/system/netplan-wpa-wlan0.service.d/nightshift-p2p.conf \
          /usr/local/sbin/nightshift-ap-start \
+         /usr/local/sbin/nightshift-ap-stop \
          /usr/local/sbin/nightshift-ap-down \
          "$INSTALL_DIR/.env" \
          "$DATA_DIR/nightshift.db"; do
@@ -98,26 +104,51 @@ if [ ! -x "$INSTALL_DIR/.venv/bin/python" ]; then
 fi
 sudo -u ubuntu "$INSTALL_DIR/.venv/bin/pip" install -e "$INSTALL_DIR"
 
-# --- dnsmasq config for AP ---
+# --- AP service and shared-radio networking ---
 
-echo "==> Installing AP service"
+echo "==> Installing AP service and scripts"
 mkdir -p /etc/nightshift-ap
-cp "$SOURCE_DIR/deploy/dnsmasq/dnsmasq.conf" /etc/nightshift-ap/dnsmasq.conf
-install -m 0755 "$SOURCE_DIR/deploy/scripts/nightshift-ap-start" /usr/local/sbin/nightshift-ap-start
-install -m 0755 "$SOURCE_DIR/deploy/scripts/nightshift-ap-down" /usr/local/sbin/nightshift-ap-down
-install -m 0644 "$SOURCE_DIR/deploy/systemd/nightshift-ap.service" /etc/systemd/system/nightshift-ap.service
+cp "$SOURCE_DIR/deploy/dnsmasq/dnsmasq.conf" \
+    /etc/nightshift-ap/dnsmasq.conf
+install -m 0755 "$SOURCE_DIR/deploy/scripts/nightshift-ap-start" \
+    /usr/local/sbin/nightshift-ap-start
+install -m 0755 "$SOURCE_DIR/deploy/scripts/nightshift-ap-stop" \
+    /usr/local/sbin/nightshift-ap-stop
+install -m 0755 "$SOURCE_DIR/deploy/scripts/nightshift-ap-down" \
+    /usr/local/sbin/nightshift-ap-down
+install -m 0644 "$SOURCE_DIR/deploy/systemd/nightshift-ap.service" \
+    /etc/systemd/system/nightshift-ap.service
+
+install -d -m 0755 /etc/sysctl.d
+install -m 0644 "$SOURCE_DIR/deploy/sysctl/90-nightshift-ap.conf" \
+    /etc/sysctl.d/90-nightshift-ap.conf
+sysctl -p /etc/sysctl.d/90-nightshift-ap.conf
+
+install -d -m 0755 /etc/modprobe.d
+install -m 0644 "$SOURCE_DIR/deploy/modprobe/90-nightshift-brcmfmac.conf" \
+    /etc/modprobe.d/90-nightshift-brcmfmac.conf
+install -d -m 0755 /etc/systemd/system/netplan-wpa-wlan0.service.d
+install -m 0644 \
+    "$SOURCE_DIR/deploy/systemd/netplan-wpa-wlan0-nightshift.conf" \
+    /etc/systemd/system/netplan-wpa-wlan0.service.d/nightshift-p2p.conf
 
 # --- Mosquitto config ---
 
 echo "==> Installing mosquitto config"
-cp "$SOURCE_DIR/deploy/mosquitto/mosquitto.conf" /etc/mosquitto/conf.d/nightshift.conf
+cp "$SOURCE_DIR/deploy/mosquitto/mosquitto.conf" \
+    /etc/mosquitto/conf.d/nightshift.conf
 cp "$SOURCE_DIR/deploy/mosquitto/acl" /etc/mosquitto/acl
+install -d -m 0755 /etc/systemd/system/mosquitto.service.d
+install -m 0644 "$SOURCE_DIR/deploy/systemd/mosquitto-nightshift.conf" \
+    /etc/systemd/system/mosquitto.service.d/nightshift-network.conf
 
-# --- systemd service ---
+# --- systemd services ---
 
-echo "==> Installing systemd service"
-cp "$SOURCE_DIR/deploy/systemd/nightshift-backend.service" /etc/systemd/system/
+echo "==> Installing systemd services"
+cp "$SOURCE_DIR/deploy/systemd/nightshift-backend.service" \
+    /etc/systemd/system/
 systemctl daemon-reload
+systemctl reset-failed nightshift-ap mosquitto nightshift-backend
 systemctl enable nightshift-ap mosquitto nightshift-backend
 systemctl restart nightshift-ap
 systemctl restart mosquitto

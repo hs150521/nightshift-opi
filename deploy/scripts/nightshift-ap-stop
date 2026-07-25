@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Remove only Nightshift-owned runtime state.  Keep ap0 itself so repeated
+# service restarts do not churn the brcmfmac virtual interface.
+set -u
+
+readonly STA_IF=wlan0
+readonly AP_IF=ap0
+readonly AP_ADDR=192.168.51.1/24
+readonly AP_SUBNET=192.168.51.0/24
+
+while iptables -C FORWARD -i "$AP_IF" -o "$STA_IF" -j ACCEPT 2>/dev/null; do
+    iptables -D FORWARD -i "$AP_IF" -o "$STA_IF" -j ACCEPT || break
+done
+while iptables -C FORWARD -i "$STA_IF" -o "$AP_IF" \
+      -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do
+    iptables -D FORWARD -i "$STA_IF" -o "$AP_IF" \
+        -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || break
+done
+while iptables -t nat -C POSTROUTING -s "$AP_SUBNET" -o "$STA_IF" \
+      -j MASQUERADE 2>/dev/null; do
+    iptables -t nat -D POSTROUTING -s "$AP_SUBNET" -o "$STA_IF" \
+        -j MASQUERADE || break
+done
+
+if ip link show "$AP_IF" >/dev/null 2>&1; then
+    ip addr del "$AP_ADDR" dev "$AP_IF" 2>/dev/null || true
+    ip link set "$AP_IF" down 2>/dev/null || true
+fi
+
+rm -rf /run/nightshift-ap
+rm -f /run/nightshift-dnsmasq.pid /run/nightshift-hostapd.pid

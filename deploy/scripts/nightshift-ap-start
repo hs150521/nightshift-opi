@@ -1,48 +1,210 @@
-#!/bin/bash
-# Start Nightshift AP: create ap0, run hostapd, then dnsmasq.
-# CRITICAL: hostapd MUST register frames before wpa_supplicant to avoid
-# brcmfmac nl80211 frame registration conflicts on shared phy.
-set -e
+#!/usr/bin/env bash
+# Start the AP only after wlan0 has associated on 2.4 GHz.  The brcmfmac
+# firmware supports one managed and one AP interface, but only on one channel.
+set -Eeuo pipefail
 
-# If wpa_supplicant is running, stop it temporarily so hostapd registers first
-WPA_WAS_RUNNING=false
-if systemctl is-active --quiet netplan-wpa-wlan0.service 2>/dev/null; then
-    WPA_WAS_RUNNING=true
-    systemctl stop netplan-wpa-wlan0.service || true
-    sleep 0.5
+readonly STA_IF=wlan0
+readonly AP_IF=ap0
+readonly AP_ADDR=192.168.51.1/24
+readonly AP_SUBNET=192.168.51.0/24
+readonly AP_MAC=42:fd:f3:bc:4e:5c
+readonly HOSTAPD_SOURCE=/etc/hostapd/nightshift-ap.conf
+readonly HOSTAPD_RUNTIME=/run/nightshift-ap/hostapd.conf
+readonly DNSMASQ_CONF=/etc/nightshift-ap/dnsmasq.conf
+readonly ROAM_RETRY_SECONDS=30
+
+HOSTAPD_PID=
+DNSMASQ_PID=
+
+log() {
+    printf 'nightshift-ap: %s\n' "$*"
+}
+
+cleanup() {
+    trap - EXIT
+    if [ -n "${DNSMASQ_PID:-}" ] && kill -0 "$DNSMASQ_PID" 2>/dev/null; then
+        kill "$DNSMASQ_PID" 2>/dev/null || true
+        wait "$DNSMASQ_PID" 2>/dev/null || true
+    fi
+    if [ -n "${HOSTAPD_PID:-}" ] && kill -0 "$HOSTAPD_PID" 2>/dev/null; then
+        kill "$HOSTAPD_PID" 2>/dev/null || true
+        wait "$HOSTAPD_PID" 2>/dev/null || true
+    fi
+    rm -f /run/nightshift-dnsmasq.pid /run/nightshift-hostapd.pid
+}
+
+terminate() {
+    exit 0
+}
+
+trap cleanup EXIT
+trap terminate INT TERM
+
+install -d -m 0755 /run/nightshift-ap /run/lock
+exec 9>/run/lock/nightshift-ap.lock
+if ! flock -n 9; then
+    log "another start/stop operation owns the lock"
+    exit 75
 fi
 
-# Remove stale ap0 if present
-if ip link show ap0 >/dev/null 2>&1; then
-    ip link set ap0 down 2>/dev/null || true
-    iw dev ap0 del 2>/dev/null || true
-    sleep 0.3
+if pgrep -x hostapd >/dev/null || pgrep -x dnsmasq >/dev/null; then
+    log "hostapd or dnsmasq is already running outside this service"
+    exit 75
 fi
 
-# Create fresh ap0 from wlan0
-iw dev wlan0 interface add ap0 type __ap
-ip link set ap0 address 42:fd:f3:bc:4e:5c
-ip addr flush dev ap0
-ip link set ap0 up
+log "waiting for ${STA_IF} to associate on 2.4 GHz"
+LAST_ROAM_ATTEMPT=0
+while true; do
+    WPA_STATUS="$(wpa_cli -i "$STA_IF" status 2>/dev/null || true)"
+    WPA_STATE="$(awk -F= '$1 == "wpa_state" { print $2 }' <<<"$WPA_STATUS")"
+    STA_FREQ="$(awk -F= '$1 == "freq" { print $2 }' <<<"$WPA_STATUS")"
+    STA_IP="$(awk -F= '$1 == "ip_address" { print $2 }' <<<"$WPA_STATUS")"
 
-# Start hostapd FIRST (registers for auth frames before wpa_supplicant)
-/usr/sbin/hostapd -B -P /run/nightshift-hostapd.pid /etc/hostapd/nightshift-ap.conf
+    if [ "$WPA_STATE" = COMPLETED ] &&
+       [[ "$STA_FREQ" =~ ^[0-9]+$ ]] &&
+       [ "$STA_FREQ" -ge 2412 ] &&
+       [ "$STA_FREQ" -le 2472 ] &&
+       [ $(((STA_FREQ - 2407) % 5)) -eq 0 ]; then
+        break
+    fi
 
-# Assert IP and start dnsmasq
-for _ in 1 2 3 4 5; do
-    ip addr show ap0 | grep -q 'inet 192.168.51.1' && break
-    ip addr add 192.168.51.1/24 dev ap0 2>/dev/null || true
-    sleep 0.5
+    if [ "$WPA_STATE" = COMPLETED ] &&
+       [[ "$STA_FREQ" =~ ^[0-9]+$ ]] &&
+       [ "$STA_FREQ" -gt 2472 ]; then
+        NOW="$(date +%s)"
+        if [ $((NOW - LAST_ROAM_ATTEMPT)) -ge "$ROAM_RETRY_SECONDS" ]; then
+            NETWORK_ID="$(awk -F= '$1 == "id" { print $2 }' <<<"$WPA_STATUS")"
+            TARGET_BSSID="$(wpa_cli -i "$STA_IF" get_network \
+                "${NETWORK_ID:-0}" bssid 2>/dev/null || true)"
+            if [[ "$TARGET_BSSID" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]]; then
+                log "${STA_IF} is on ${STA_FREQ} MHz; requesting roam to ${TARGET_BSSID}"
+                wpa_cli -i "$STA_IF" roam "$TARGET_BSSID" >/dev/null 2>&1 || true
+                LAST_ROAM_ATTEMPT="$NOW"
+            fi
+        fi
+    fi
+    sleep 1
 done
-ip addr show ap0
 
-/usr/sbin/dnsmasq --conf-file=/etc/nightshift-ap/dnsmasq.conf --pid-file=/run/nightshift-dnsmasq.pid
+STA_CHANNEL=$(((STA_FREQ - 2407) / 5))
+log "${STA_IF} is ready at ${STA_FREQ} MHz (channel ${STA_CHANNEL}), IP ${STA_IP:-pending}"
 
-# Restart wpa_supplicant if it was running
-if [ "$WPA_WAS_RUNNING" = true ]; then
-    systemctl start netplan-wpa-wlan0.service || true
-    sleep 2
-    # Disable background scanning to prevent AP disruption
-    wpa_cli -i wlan0 set bgscan "" 2>/dev/null || true
-    wpa_cli -i wlan0 scan_interval 3600 2>/dev/null || true
+if ip link show "$AP_IF" >/dev/null 2>&1; then
+    if ! iw dev "$AP_IF" info | grep -Eq '^[[:space:]]*type AP$'; then
+        log "${AP_IF} exists but is not an AP interface; refusing to replace it"
+        exit 75
+    fi
+    log "reusing existing ${AP_IF}"
+else
+    log "creating ${AP_IF} once on the existing phy"
+    iw dev "$STA_IF" interface add "$AP_IF" type __ap
 fi
+
+ip link set "$AP_IF" down 2>/dev/null || true
+ip link set "$AP_IF" address "$AP_MAC"
+ip addr replace "$AP_ADDR" dev "$AP_IF"
+ip link set "$AP_IF" up
+
+awk -v channel="$STA_CHANNEL" '
+    BEGIN { replaced = 0 }
+    /^[[:space:]]*channel=/ {
+        print "channel=" channel
+        replaced = 1
+        next
+    }
+    { print }
+    END {
+        if (!replaced)
+            print "channel=" channel
+    }
+' "$HOSTAPD_SOURCE" >"$HOSTAPD_RUNTIME"
+chmod 0600 "$HOSTAPD_RUNTIME"
+
+log "starting hostapd on channel ${STA_CHANNEL}"
+/usr/sbin/hostapd "$HOSTAPD_RUNTIME" &
+HOSTAPD_PID=$!
+printf '%s\n' "$HOSTAPD_PID" >/run/nightshift-hostapd.pid
+
+AP_ENABLED=false
+for _ in $(seq 1 40); do
+    if ! kill -0 "$HOSTAPD_PID" 2>/dev/null; then
+        wait "$HOSTAPD_PID"
+        exit $?
+    fi
+    if hostapd_cli -i "$AP_IF" status 2>/dev/null |
+       grep -qx 'state=ENABLED'; then
+        AP_ENABLED=true
+        break
+    fi
+    sleep 0.25
+done
+if [ "$AP_ENABLED" != true ]; then
+    log "hostapd did not reach ENABLED state"
+    exit 1
+fi
+
+ip addr replace "$AP_ADDR" dev "$AP_IF"
+ip link set "$AP_IF" up
+if ! ip -4 addr show dev "$AP_IF" |
+     grep -q "inet ${AP_ADDR%/*}/"; then
+    log "${AP_IF} does not own ${AP_ADDR}"
+    exit 1
+fi
+
+# Starting hostapd briefly drops wlan0 carrier on this brcmfmac firmware.
+# Wait until carrier has been present for two consecutive checks before asking
+# networkd to renew DHCP. An immediate reconfigure can race the carrier drop and
+# leave wlan0 associated but without an IPv4 address until manual intervention.
+if command -v networkctl >/dev/null 2>&1; then
+    carrier_checks=0
+    carrier_stable=0
+    sleep 2
+    while [ "$carrier_checks" -lt 15 ] && [ "$carrier_stable" -lt 2 ]; do
+        if [ "$(cat "/sys/class/net/$STA_IF/carrier" 2>/dev/null)" = "1" ]; then
+            carrier_stable=$((carrier_stable + 1))
+        else
+            carrier_stable=0
+        fi
+        carrier_checks=$((carrier_checks + 1))
+        if [ "$carrier_stable" -lt 2 ]; then
+            sleep 1
+        fi
+    done
+    networkctl reconfigure "$STA_IF" 2>/dev/null || true
+fi
+
+sysctl -q -w net.ipv4.ip_forward=1
+iptables -C FORWARD -i "$AP_IF" -o "$STA_IF" -j ACCEPT 2>/dev/null ||
+    iptables -I FORWARD 1 -i "$AP_IF" -o "$STA_IF" -j ACCEPT
+iptables -C FORWARD -i "$STA_IF" -o "$AP_IF" \
+    -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null ||
+    iptables -I FORWARD 1 -i "$STA_IF" -o "$AP_IF" \
+        -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -t nat -C POSTROUTING -s "$AP_SUBNET" -o "$STA_IF" \
+    -j MASQUERADE 2>/dev/null ||
+    iptables -t nat -A POSTROUTING -s "$AP_SUBNET" -o "$STA_IF" \
+        -j MASQUERADE
+
+log "starting dnsmasq"
+/usr/sbin/dnsmasq --keep-in-foreground \
+    --conf-file="$DNSMASQ_CONF" \
+    --pid-file=/run/nightshift-dnsmasq.pid &
+DNSMASQ_PID=$!
+
+log "AP is ready; monitoring STA frequency and child processes"
+while kill -0 "$HOSTAPD_PID" 2>/dev/null &&
+      kill -0 "$DNSMASQ_PID" 2>/dev/null; do
+    sleep 5
+    CURRENT_STATUS="$(wpa_cli -i "$STA_IF" status 2>/dev/null || true)"
+    CURRENT_STATE="$(awk -F= '$1 == "wpa_state" { print $2 }' <<<"$CURRENT_STATUS")"
+    CURRENT_FREQ="$(awk -F= '$1 == "freq" { print $2 }' <<<"$CURRENT_STATUS")"
+    if [ "$CURRENT_STATE" = COMPLETED ] &&
+       [ -n "$CURRENT_FREQ" ] &&
+       [ "$CURRENT_FREQ" != "$STA_FREQ" ]; then
+        log "STA frequency changed from ${STA_FREQ} to ${CURRENT_FREQ}; restarting AP"
+        exit 75
+    fi
+done
+
+log "hostapd or dnsmasq exited unexpectedly"
+exit 1
