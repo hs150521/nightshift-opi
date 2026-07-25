@@ -351,19 +351,18 @@ class NightshiftOrchestrator:
                 cmd.DASHBOARD_SET,
                 proto.encode_dashboard_set(self._state.revision, self._dashboard),
             )
-            if notice is not None:
-                await self._uart.send(
-                    cmd.NOTICE_SHOW,
-                    proto.encode_notice_show(
-                        revision=self._state.revision,
-                        notice_id=notice.id,
-                        severity=notice.flags & 0x03,
-                        flags=notice.flags,
-                        expires_at_ms=notice.expires_at_ms or 0,
-                        title=notice.title,
-                        body=notice.body,
-                    ),
-                )
+            await self._uart.send(
+                cmd.NOTICE_SHOW,
+                proto.encode_notice_show(
+                    revision=self._state.revision,
+                    notice_id=notice.id if notice is not None else 0,
+                    severity=(notice.flags & 0x03) if notice is not None else 0,
+                    flags=notice.flags if notice is not None else 0,
+                    expires_at_ms=(notice.expires_at_ms or 0) if notice is not None else 0,
+                    title=notice.title if notice is not None else "",
+                    body=notice.body if notice is not None else "",
+                ),
+            )
             await self._uart.send(
                 cmd.TASK_LIST_BEGIN,
                 proto.encode_task_list_begin(

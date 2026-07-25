@@ -153,6 +153,27 @@ async def test_idempotency_returns_cached_reply(handler, orchestrator):
     assert reply1.request_id == reply2.request_id
 
 
+async def test_idempotency_covers_long_lived_command(topics, orchestrator):
+    now = [5_000]
+    handler = MqttCommandHandler(
+        topics=topics,
+        orchestrator=orchestrator,
+        now_ms=lambda: now[0],
+    )
+    task = await orchestrator._task_service.create(quadrant=0, title="T", now_ms=1000)
+    request_id = "83345678-1234-1234-1234-123456789abc"
+    payload = json.loads(_cmd("task.confirm", {"task_id": task.id}, request_id))
+    payload["ttl_ms"] = 120_000
+    encoded = json.dumps(payload)
+
+    first = await handler.handle(encoded)
+    now[0] = 70_000
+    replay = await handler.handle(encoded)
+
+    assert first is not None and replay is not None
+    assert replay[1] == first[1]
+
+
 async def test_same_request_id_with_different_command_conflicts(
     handler, orchestrator
 ):

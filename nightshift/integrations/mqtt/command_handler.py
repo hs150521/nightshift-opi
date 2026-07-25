@@ -29,7 +29,7 @@ CommandDispatcher = Callable[
     Coroutine[Any, Any, tuple[bool, str, dict[str, Any]]],
 ]
 
-_CACHE_TTL_MS = 60_000
+_CACHE_RETRY_WINDOW_MS = 60_000
 
 
 @dataclass
@@ -112,7 +112,11 @@ class MqttCommandHandler:
         self._cache[envelope.request_id] = _CachedReply(
             digest=digest,
             reply=reply,
-            expires_at_ms=self._now_ms() + _CACHE_TTL_MS,
+            expires_at_ms=(
+                envelope.sent_at_ms
+                + envelope.ttl_ms
+                + _CACHE_RETRY_WINDOW_MS
+            ),
         )
 
         return envelope.reply_to, reply

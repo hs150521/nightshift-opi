@@ -1,5 +1,7 @@
 """Tests for orchestrator UI action routing with real services."""
 
+import struct
+
 import pytest
 
 from nightshift.domain.commands import (
@@ -170,6 +172,28 @@ async def test_full_sync_sends_database_snapshot(orchestrator, db):
         STATE_SYNC_END,
     ]
     assert orchestrator.dashboard.urgent_confirm == 1
+
+
+async def test_full_sync_explicitly_clears_notice(orchestrator):
+    sent = []
+
+    async def capture(command, payload=b"", **kwargs):
+        sent.append((command, payload))
+        return b""
+
+    orchestrator._uart.send = capture
+    await orchestrator._full_sync()
+
+    notice_payload = next(payload for command, payload in sent if command == NOTICE_SHOW)
+    revision, notice_id, severity, flags, expires_at_ms = struct.unpack(
+        "<IIBBQ", notice_payload[:18]
+    )
+    assert revision == orchestrator.state.revision
+    assert notice_id == 0
+    assert severity == 0
+    assert flags == 0
+    assert expires_at_ms == 0
+    assert notice_payload[18:] == b"\x00\x00\x00\x00"
 
 
 async def test_full_sync_does_not_commit_partial_snapshot(orchestrator):
