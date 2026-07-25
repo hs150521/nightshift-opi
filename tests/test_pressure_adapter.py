@@ -95,6 +95,33 @@ async def test_availability_offline_marks_unavailable(adapter: PressureMqttAdapt
 
 
 @pytest.mark.asyncio
+async def test_availability_offline_preserves_last_known_sensor_outputs(
+    adapter: PressureMqttAdapter,
+) -> None:
+    await adapter._handle_message(
+        FakeMessage(adapter._topic_availability(), _avail_payload(online=True))
+    )
+    await adapter._handle_message(
+        FakeMessage(
+            adapter._topic_state(),
+            _state_payload(seq=1, cushion=True, footrest=False),
+        )
+    )
+
+    await adapter._handle_message(
+        FakeMessage(adapter._topic_availability(), _avail_payload(online=False))
+    )
+
+    state = adapter.snapshot()
+    assert state.online is False
+    assert state.is_valid(int(time.monotonic() * 1000)) is False
+    assert state.cushion is True
+    assert state.footrest is False
+    assert state.last_sample is not None
+    assert state.last_sample.seq == 1
+
+
+@pytest.mark.asyncio
 async def test_state_accepted_and_updates_sample(adapter: PressureMqttAdapter) -> None:
     # Online first
     msg = FakeMessage(adapter._topic_availability(), _avail_payload(online=True))

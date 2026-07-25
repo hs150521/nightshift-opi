@@ -49,6 +49,11 @@ class PressureState:
     `online` is derived from the retained MQTT availability topic. `valid`
     means we have a fresh sample from the current boot. Callers must
     recompute `valid` against a current clock via `is_valid`.
+
+    `last_sample` is intentionally preserved when availability becomes
+    offline or the sample becomes stale. This keeps the last-known cushion
+    and footrest outputs stable while `online`/`valid` separately report that
+    no current ESP32 signal is available.
     """
 
     online: bool
