@@ -32,9 +32,6 @@ SCALAR_WIDTHS = {
     "i64": 8,
 }
 
-# Canonical example payloads produced by the encoders. Every schema in
-# `payloads` MUST have exactly one representative here so we can assert the
-# encoder honours the YAML layout width.
 ENCODER_EXAMPLES: dict[str, dict[str, bytes]] = {
     "HELLO": {
         "request": proto.encode_hello(
@@ -56,7 +53,17 @@ ENCODER_EXAMPLES: dict[str, dict[str, bytes]] = {
     "GET_INFO": {
         "request": proto.encode_get_info_request(),
         "response": proto.encode_get_info_response(
-            status=cmd.OK, hardware_id=1, uptime_ms=1, capability_flags=0, firmware_version="x"
+            status=cmd.OK,
+            protocol_major=1,
+            protocol_minor=0,
+            max_payload=1024,
+            capabilities=3,
+            display_width=960,
+            display_height=540,
+            color_bits=16,
+            max_tasks=20,
+            firmware_version="x",
+            board_name="y",
         ),
     },
     "TIME_SYNC": {
@@ -90,26 +97,25 @@ ENCODER_EXAMPLES: dict[str, dict[str, bytes]] = {
     },
     "NOTICE_SHOW": {
         "request": proto.encode_notice_show(
-            revision=1, notice_id=1, severity=1, ttl_ms=1, title="a", body="b"
+            revision=1, notice_id=1, severity=1, flags=0, expires_at_ms=1000, title="a", body="b"
         ),
     },
     "TASK_LIST_BEGIN": {
-        "request": proto.encode_task_list_begin(revision=1, total=1, reason=0),
+        "request": proto.encode_task_list_begin(revision=1, list_type=0, item_count=1),
     },
     "TASK_ITEM": {
         "request": proto.encode_task_item(
             revision=1,
-            index=0,
             task_id=1,
-            status=0,
-            priority=0,
-            progress_permille=0,
-            requires_confirmation=0,
+            quadrant=0,
+            task_state=0,
+            flags=0,
             title="t",
+            source="s",
         ),
     },
     "TASK_LIST_END": {
-        "request": proto.encode_task_list_end(revision=1, snapshot_crc32=0),
+        "request": proto.encode_task_list_end(revision=1, list_crc32=0),
     },
     "UI_ACTION": {
         "event": proto.encode_ui_action(
@@ -117,13 +123,13 @@ ENCODER_EXAMPLES: dict[str, dict[str, bytes]] = {
         ),
     },
     "PAGE_EVENT": {
-        "event": proto.encode_page_event(page_id=1, action=0, param=0),
+        "event": proto.encode_page_event(page_id=1, event=0, object_id=0),
     },
     "LED_OVERRIDE": {
-        "request": proto.encode_led_override(pattern=1, color_rgb=0, duration_ms=0, priority=0),
+        "request": proto.encode_led_override(active=1, mode=0, period_ms=0),
     },
     "BACKLIGHT_SET": {
-        "request": proto.encode_backlight_set(brightness_pct=50, duration_ms=100),
+        "request": proto.encode_backlight_set(percent=50),
     },
 }
 
@@ -161,13 +167,11 @@ def test_encoder_widths_match_yaml_schema() -> None:
         for role, fields in roles.items():
             example = ENCODER_EXAMPLES[name][role]
             fixed, strings = _expected_width(fields)
-            # Each YAML string contributes: 2-byte length prefix + payload bytes.
             actual = len(example)
             assert actual >= fixed + 2 * strings, (
                 f"{name}.{role}: encoder produced {actual} bytes, "
                 f"YAML schema requires at least fixed={fixed} + strings*(2)={2 * strings}"
             )
-            # The minimum-content sanity check: the fixed prefix must match exactly.
             assert actual - _strings_content_bytes(example, fixed, strings) == fixed + 2 * strings, (
                 f"{name}.{role}: encoder width does not match YAML layout"
             )

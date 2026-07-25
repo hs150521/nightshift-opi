@@ -206,10 +206,9 @@ class NightshiftOrchestrator:
             await self._publish_state()
 
     def _merge_attention(self, from_state_machine: AttentionFlag) -> AttentionFlag:
-        # Keep panel-connectivity flag under our own control; the state
-        # machine only owns SENSOR_ERROR here.
-        preserved = self._state.attention & AttentionFlag.PANEL_OFFLINE
-        return from_state_machine | preserved
+        preserved = self._state.attention & ~AttentionFlag.SENSOR_ERROR
+        sensor = from_state_machine & AttentionFlag.SENSOR_ERROR
+        return preserved | sensor
 
     async def _publish_state(self) -> None:
         try:
@@ -313,7 +312,7 @@ class NightshiftOrchestrator:
                 panel_online=event.online,
                 attention=attention,
                 updated_at_ms=int(time.monotonic() * 1000),
-                bump_revision=False,
+                bump_revision=attention_changed,
             )
             if attention_changed:
                 asyncio.create_task(self._publish_state())

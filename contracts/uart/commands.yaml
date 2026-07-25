@@ -1,10 +1,12 @@
 t5_link_v1:
+  contract_status: frozen
   magic: [0x54, 0x35]
   version: 1
   max_payload: 1024
   byte_order: little_endian
   crc: CRC-16/CCITT-FALSE
   framing: COBS
+  string: u16_byte_length_plus_utf8
 
   flags:
     ACK_REQ: 0x01
@@ -26,7 +28,13 @@ t5_link_v1:
     UNSUPPORTED_VERSION: 0x0009
     NO_SPACE: 0x000A
     STATE_CONFLICT: 0x000B
-    NOT_IMPLEMENTED: 0x000C
+
+  object_types:
+    NONE: 0
+    TASK: 1
+    NOTICE: 2
+    EXECUTOR: 3
+    PANEL: 4
 
   capabilities:
     LCD: 0x0001
@@ -65,6 +73,10 @@ t5_link_v1:
     PREVIOUS_PAGE: 11
     DISMISS_NOTICE: 12
     REQUEST_RESYNC: 13
+
+  event_flags:
+    UI_ACTION: 0x05  # EVENT | ACK_REQ
+    PAGE_EVENT: 0x04  # EVENT
 
   commands:
     # System
@@ -120,9 +132,6 @@ t5_link_v1:
       request:
         - { name: uptime_ms, type: u32 }
         - { name: state_revision, type: u32 }
-      # Canonical `<HIII>` response, exactly 14 bytes. Frozen contract
-      # shared with T5 firmware. Non-OK status means T5 did not commit
-      # the reported applied_revision; error_flags encodes T5-side faults.
       response:
         - { name: status, type: u16 }
         - { name: t5_uptime_ms, type: u32 }
@@ -133,24 +142,30 @@ t5_link_v1:
       request: []
       response:
         - { name: status, type: u16 }
-        - { name: hardware_id, type: u32 }
-        - { name: uptime_ms, type: u32 }
-        - { name: capability_flags, type: u16 }
+        - { name: protocol_major, type: u8 }
+        - { name: protocol_minor, type: u8 }
+        - { name: max_payload, type: u16 }
+        - { name: capabilities, type: u32 }
+        - { name: display_width, type: u16 }
+        - { name: display_height, type: u16 }
+        - { name: color_bits, type: u8 }
+        - { name: max_tasks, type: u8 }
         - { name: firmware_version, type: string }
+        - { name: board_name, type: string }
 
     TIME_SYNC:
       request:
-        - { name: now_ms, type: u64 }
-        - { name: tz_offset_minutes, type: i16 }
+        - { name: unix_time_ms, type: u64 }
+        - { name: utc_offset_minutes, type: i16 }
 
     STATE_SYNC_BEGIN:
       request:
-        - { name: revision, type: u32 }
+        - { name: target_revision, type: u32 }
         - { name: sync_reason, type: u8 }
 
     STATE_SYNC_END:
       request:
-        - { name: revision, type: u32 }
+        - { name: target_revision, type: u32 }
         - { name: snapshot_crc32, type: u32 }
 
     MODE_SET:
@@ -194,31 +209,31 @@ t5_link_v1:
         - { name: revision, type: u32 }
         - { name: notice_id, type: u32 }
         - { name: severity, type: u8 }
-        - { name: ttl_ms, type: u32 }
+        - { name: flags, type: u8 }
+        - { name: expires_at_ms, type: u64 }
         - { name: title, type: string }
         - { name: body, type: string }
 
     TASK_LIST_BEGIN:
       request:
         - { name: revision, type: u32 }
-        - { name: total, type: u16 }
-        - { name: reason, type: u8 }
+        - { name: list_type, type: u8 }
+        - { name: item_count, type: u16 }
 
     TASK_ITEM:
       request:
         - { name: revision, type: u32 }
-        - { name: index, type: u16 }
         - { name: task_id, type: u32 }
-        - { name: status, type: u8 }
-        - { name: priority, type: u8 }
-        - { name: progress_permille, type: u16 }
-        - { name: requires_confirmation, type: u8 }
+        - { name: quadrant, type: u8 }
+        - { name: task_state, type: u8 }
+        - { name: flags, type: u8 }
         - { name: title, type: string }
+        - { name: source, type: string }
 
     TASK_LIST_END:
       request:
         - { name: revision, type: u32 }
-        - { name: snapshot_crc32, type: u32 }
+        - { name: list_crc32, type: u32 }
 
     UI_ACTION:
       event:
@@ -230,18 +245,16 @@ t5_link_v1:
 
     PAGE_EVENT:
       event:
-        - { name: page_id, type: u16 }
-        - { name: action, type: u8 }
-        - { name: param, type: u32 }
+        - { name: page_id, type: u8 }
+        - { name: event, type: u8 }
+        - { name: object_id, type: u32 }
 
     LED_OVERRIDE:
       request:
-        - { name: pattern, type: u8 }
-        - { name: color_rgb, type: u32 }
-        - { name: duration_ms, type: u32 }
-        - { name: priority, type: u8 }
+        - { name: active, type: u8 }
+        - { name: mode, type: u8 }
+        - { name: period_ms, type: u16 }
 
     BACKLIGHT_SET:
       request:
-        - { name: brightness_pct, type: u8 }
-        - { name: duration_ms, type: u32 }
+        - { name: percent, type: u8 }

@@ -88,8 +88,8 @@ class PageEvent:
     """T5 emits this when the user changes page or triggers a page-scoped hook."""
 
     page_id: int
-    action: int
-    param: int
+    event: int
+    object_id: int
     occurred_at_ms: int = 0
 
 

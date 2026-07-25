@@ -179,21 +179,22 @@ class UartGateway:
             return
 
         if frame.command == cmd.HELLO:
-            # Panel-initiated handshake (reboot/reconnect). ACK first with the
-            # original sequence, then trigger a snapshot resync.
-            await self._send_ack(frame, cmd.OK)
             try:
                 hello = proto.parse_hello(frame.payload)
-                previous_boot_id = self._peer_boot_id
-                if previous_boot_id != hello.boot_id:
-                    self._peer_boot_id = hello.boot_id
-                    if self._on_peer_boot_id_change:
-                        try:
-                            self._on_peer_boot_id_change(previous_boot_id, hello.boot_id)
-                        except Exception:
-                            logger.exception("on_peer_boot_id_change failed")
             except proto.ProtocolError:
-                logger.warning("failed to parse HELLO payload")
+                logger.warning("malformed HELLO payload, rejecting")
+                await self._send_ack(frame, cmd.INVALID_ARGUMENT)
+                return
+
+            await self._send_ack(frame, cmd.OK)
+            previous_boot_id = self._peer_boot_id
+            if previous_boot_id != hello.boot_id:
+                self._peer_boot_id = hello.boot_id
+                if self._on_peer_boot_id_change:
+                    try:
+                        self._on_peer_boot_id_change(previous_boot_id, hello.boot_id)
+                    except Exception:
+                        logger.exception("on_peer_boot_id_change failed")
             if self._on_panel_hello:
                 try:
                     result = self._on_panel_hello()
@@ -233,8 +234,8 @@ class UartGateway:
                     self._on_event(
                         PageEvent(
                             page_id=page.page_id,
-                            action=page.action,
-                            param=page.param,
+                            event=page.event,
+                            object_id=page.object_id,
                             occurred_at_ms=int(time.monotonic() * 1000),
                         )
                     )

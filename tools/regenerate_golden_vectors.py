@@ -165,7 +165,8 @@ SPECS: list[VectorSpec] = [
             revision=1,
             notice_id=42,
             severity=1,
-            ttl_ms=5000,
+            flags=0,
+            expires_at_ms=5000,
             title="hi",
             body="body",
         ),
@@ -176,7 +177,9 @@ SPECS: list[VectorSpec] = [
         command=cmd.TASK_LIST_BEGIN,
         command_name="TASK_LIST_BEGIN",
         flags=cmd.FLAG_ACK_REQ,
-        payload_factory=lambda: proto.encode_task_list_begin(revision=1, total=2, reason=0),
+        payload_factory=lambda: proto.encode_task_list_begin(
+            revision=1, list_type=0, item_count=2
+        ),
     ),
     VectorSpec(
         name="task_item",
@@ -186,13 +189,12 @@ SPECS: list[VectorSpec] = [
         flags=cmd.FLAG_ACK_REQ,
         payload_factory=lambda: proto.encode_task_item(
             revision=1,
-            index=0,
             task_id=101,
-            status=cmd.WORK_RUNNING,
-            priority=1,
-            progress_permille=250,
-            requires_confirmation=0,
+            quadrant=1,
+            task_state=cmd.WORK_RUNNING,
+            flags=0,
             title="first",
+            source="user",
         ),
     ),
     VectorSpec(
@@ -201,17 +203,17 @@ SPECS: list[VectorSpec] = [
         command=cmd.TASK_LIST_END,
         command_name="TASK_LIST_END",
         flags=cmd.FLAG_ACK_REQ,
-        payload_factory=lambda: proto.encode_task_list_end(revision=1, snapshot_crc32=0xDEADBEEF),
+        payload_factory=lambda: proto.encode_task_list_end(revision=1, list_crc32=0xDEADBEEF),
     ),
     VectorSpec(
         name="ui_action_confirm",
         sequence=13,
         command=cmd.UI_ACTION,
         command_name="UI_ACTION",
-        flags=cmd.FLAG_EVENT,
+        flags=cmd.FLAG_EVENT | cmd.FLAG_ACK_REQ,
         payload_factory=lambda: proto.encode_ui_action(
             action=cmd.ACTION_CONFIRM,
-            object_type=1,
+            object_type=cmd.OBJ_TASK,
             object_id=50,
             value=0,
             text="",
@@ -225,7 +227,7 @@ SPECS: list[VectorSpec] = [
         flags=cmd.FLAG_EVENT | cmd.FLAG_ACK_REQ,
         payload_factory=lambda: proto.encode_ui_action(
             action=cmd.ACTION_REQUEST_RESYNC,
-            object_type=0,
+            object_type=cmd.OBJ_NONE,
             object_id=0,
             value=0,
             text="",
@@ -237,7 +239,7 @@ SPECS: list[VectorSpec] = [
         command=cmd.PAGE_EVENT,
         command_name="PAGE_EVENT",
         flags=cmd.FLAG_EVENT,
-        payload_factory=lambda: proto.encode_page_event(page_id=3, action=1, param=0),
+        payload_factory=lambda: proto.encode_page_event(page_id=3, event=1, object_id=0),
     ),
     VectorSpec(
         name="get_info_request",
@@ -255,10 +257,16 @@ SPECS: list[VectorSpec] = [
         flags=cmd.FLAG_RESPONSE,
         payload_factory=lambda: proto.encode_get_info_response(
             status=cmd.OK,
-            hardware_id=0xAB01CD02,
-            uptime_ms=99_000,
-            capability_flags=cmd.CAP_LCD | cmd.CAP_TOUCH,
+            protocol_major=1,
+            protocol_minor=0,
+            max_payload=1024,
+            capabilities=cmd.CAP_LCD | cmd.CAP_TOUCH,
+            display_width=960,
+            display_height=540,
+            color_bits=16,
+            max_tasks=20,
             firmware_version="t5/0.1.0",
+            board_name="T5-E-Paper",
         ),
     ),
     VectorSpec(
@@ -278,7 +286,7 @@ SPECS: list[VectorSpec] = [
         command_name="LED_OVERRIDE",
         flags=cmd.FLAG_ACK_REQ,
         payload_factory=lambda: proto.encode_led_override(
-            pattern=2, color_rgb=0x00FF00, duration_ms=1000, priority=1
+            active=1, mode=2, period_ms=1000
         ),
     ),
     VectorSpec(
@@ -287,9 +295,7 @@ SPECS: list[VectorSpec] = [
         command=cmd.BACKLIGHT_SET,
         command_name="BACKLIGHT_SET",
         flags=cmd.FLAG_ACK_REQ,
-        payload_factory=lambda: proto.encode_backlight_set(
-            brightness_pct=75, duration_ms=500
-        ),
+        payload_factory=lambda: proto.encode_backlight_set(percent=75),
     ),
 ]
 

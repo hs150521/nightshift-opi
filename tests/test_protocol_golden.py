@@ -83,7 +83,6 @@ def test_mode_set_reason_is_u8(golden: dict[str, dict]) -> None:
         changed_at_ms=1_700_000_000_000,
         reason=2,
     )
-    # revision(u32) + mode(u8) + reason(u8) + changed_at_ms(u64) = 14 bytes
     assert len(payload) == 14
     frame = proto.Frame.request(5, cmd.MODE_SET, payload, cmd.FLAG_ACK_REQ)
     assert _wire(frame).hex() == golden["mode_set_night_exec"]["raw_hex"]
@@ -116,6 +115,15 @@ def test_work_state_set_has_revision_prefix(golden: dict[str, dict]) -> None:
     assert _wire(frame).hex() == golden["work_state_set_running"]["raw_hex"]
 
 
+def test_work_state_set_minimum_27_bytes() -> None:
+    payload = proto.encode_work_state_set(
+        revision=1,
+        work_state=WorkState.STOPPED,
+    )
+    # <IBHHIIII> = 4+1+2+2+4+4+4+4 = 25 bytes fixed + 2 byte string length = 27 minimum
+    assert len(payload) >= 27
+
+
 def test_dashboard_set_matches_golden(golden: dict[str, dict]) -> None:
     payload = proto.encode_dashboard_set(
         revision=1,
@@ -136,14 +144,14 @@ def test_dashboard_set_matches_golden(golden: dict[str, dict]) -> None:
 def test_ui_action_confirm_matches_golden(golden: dict[str, dict]) -> None:
     payload = proto.encode_ui_action(
         action=cmd.ACTION_CONFIRM,
-        object_type=1,
+        object_type=cmd.OBJ_TASK,
         object_id=50,
         value=0,
         text="",
     )
     frame = proto.Frame(
         version=proto.VERSION,
-        flags=cmd.FLAG_EVENT,
+        flags=cmd.FLAG_EVENT | cmd.FLAG_ACK_REQ,
         sequence=13,
         command=cmd.UI_ACTION,
         payload=payload,
@@ -154,7 +162,7 @@ def test_ui_action_confirm_matches_golden(golden: dict[str, dict]) -> None:
 def test_ui_action_request_resync_matches_golden(golden: dict[str, dict]) -> None:
     payload = proto.encode_ui_action(
         action=cmd.ACTION_REQUEST_RESYNC,
-        object_type=0,
+        object_type=cmd.OBJ_NONE,
         object_id=0,
         value=0,
         text="",
@@ -171,37 +179,36 @@ def test_ui_action_request_resync_matches_golden(golden: dict[str, dict]) -> Non
 
 def test_notice_show_matches_golden(golden: dict[str, dict]) -> None:
     payload = proto.encode_notice_show(
-        revision=1, notice_id=42, severity=1, ttl_ms=5000, title="hi", body="body"
+        revision=1, notice_id=42, severity=1, flags=0, expires_at_ms=5000, title="hi", body="body"
     )
     frame = proto.Frame.request(9, cmd.NOTICE_SHOW, payload, cmd.FLAG_ACK_REQ)
     assert _wire(frame).hex() == golden["notice_show"]["raw_hex"]
 
 
 def test_task_list_frames_match_golden(golden: dict[str, dict]) -> None:
-    begin = proto.encode_task_list_begin(revision=1, total=2, reason=0)
+    begin = proto.encode_task_list_begin(revision=1, list_type=0, item_count=2)
     frame = proto.Frame.request(10, cmd.TASK_LIST_BEGIN, begin, cmd.FLAG_ACK_REQ)
     assert _wire(frame).hex() == golden["task_list_begin"]["raw_hex"]
 
     item = proto.encode_task_item(
         revision=1,
-        index=0,
         task_id=101,
-        status=cmd.WORK_RUNNING,
-        priority=1,
-        progress_permille=250,
-        requires_confirmation=0,
+        quadrant=1,
+        task_state=cmd.WORK_RUNNING,
+        flags=0,
         title="first",
+        source="user",
     )
     frame = proto.Frame.request(11, cmd.TASK_ITEM, item, cmd.FLAG_ACK_REQ)
     assert _wire(frame).hex() == golden["task_item"]["raw_hex"]
 
-    end = proto.encode_task_list_end(revision=1, snapshot_crc32=0xDEADBEEF)
+    end = proto.encode_task_list_end(revision=1, list_crc32=0xDEADBEEF)
     frame = proto.Frame.request(12, cmd.TASK_LIST_END, end, cmd.FLAG_ACK_REQ)
     assert _wire(frame).hex() == golden["task_list_end"]["raw_hex"]
 
 
 def test_page_event_matches_golden(golden: dict[str, dict]) -> None:
-    payload = proto.encode_page_event(page_id=3, action=1, param=0)
+    payload = proto.encode_page_event(page_id=3, event=1, object_id=0)
     frame = proto.Frame(
         version=proto.VERSION,
         flags=cmd.FLAG_EVENT,
@@ -219,10 +226,16 @@ def test_get_info_frames_match_golden(golden: dict[str, dict]) -> None:
 
     resp = proto.encode_get_info_response(
         status=cmd.OK,
-        hardware_id=0xAB01CD02,
-        uptime_ms=99_000,
-        capability_flags=cmd.CAP_LCD | cmd.CAP_TOUCH,
+        protocol_major=1,
+        protocol_minor=0,
+        max_payload=1024,
+        capabilities=cmd.CAP_LCD | cmd.CAP_TOUCH,
+        display_width=960,
+        display_height=540,
+        color_bits=16,
+        max_tasks=20,
         firmware_version="t5/0.1.0",
+        board_name="T5-E-Paper",
     )
     frame = proto.Frame(
         version=proto.VERSION,
@@ -241,11 +254,11 @@ def test_time_sync_matches_golden(golden: dict[str, dict]) -> None:
 
 
 def test_led_and_backlight_match_golden(golden: dict[str, dict]) -> None:
-    led = proto.encode_led_override(pattern=2, color_rgb=0x00FF00, duration_ms=1000, priority=1)
+    led = proto.encode_led_override(active=1, mode=2, period_ms=1000)
     frame = proto.Frame.request(18, cmd.LED_OVERRIDE, led, cmd.FLAG_ACK_REQ)
     assert _wire(frame).hex() == golden["led_override"]["raw_hex"]
 
-    backlight = proto.encode_backlight_set(brightness_pct=75, duration_ms=500)
+    backlight = proto.encode_backlight_set(percent=75)
     frame = proto.Frame.request(19, cmd.BACKLIGHT_SET, backlight, cmd.FLAG_ACK_REQ)
     assert _wire(frame).hex() == golden["backlight_set"]["raw_hex"]
 
