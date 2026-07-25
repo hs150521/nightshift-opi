@@ -87,6 +87,7 @@ class NightshiftOrchestrator:
             uart_config,
             on_event=self._on_event,
             on_panel_hello=self._on_panel_hello,
+            ui_action_handler=self._handle_ui_action,
         )
         self._tick_task: asyncio.Task[None] | None = None
         self._state_listeners: list[StateListener] = []
@@ -318,7 +319,29 @@ class NightshiftOrchestrator:
                 asyncio.create_task(self._publish_state())
         elif isinstance(event, UiAction):
             logger.info("ui_action_received", action=event.action, object_id=event.object_id)
-            # TODO: forward to confirmation/task service once implemented.
+
+    async def _handle_ui_action(self, event: UiAction) -> tuple[int, bytes]:
+        """Route a UI action to the appropriate service. Returns (status, reply_data)."""
+        action = event.action
+
+        if action == cmd.ACTION_PAUSE_EXECUTION:
+            await self.pause_executor()
+            return cmd.OK, b""
+        elif action == cmd.ACTION_RESUME_EXECUTION:
+            await self.resume_executor()
+            return cmd.OK, b""
+        elif action == cmd.ACTION_REQUEST_RESYNC:
+            await self._full_sync()
+            return cmd.OK, b""
+        elif action in (
+            cmd.ACTION_CONFIRM,
+            cmd.ACTION_REJECT,
+            cmd.ACTION_RETRY,
+            cmd.ACTION_DISMISS_NOTICE,
+        ):
+            return cmd.NOT_READY, b""
+        else:
+            return cmd.OK, b""
 
     async def _on_panel_hello(self) -> None:
         await self._full_sync()

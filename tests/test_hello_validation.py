@@ -31,6 +31,7 @@ def gateway() -> UartGateway:
     gw._hello_calls = hello_calls
     gw._writer = MagicMock()
     gw._writer.write = MagicMock()
+    gw._connected = True
     return gw
 
 
@@ -59,7 +60,7 @@ async def test_valid_hello_triggers_session(gateway: UartGateway) -> None:
     await gateway._dispatch(frame)
 
     assert gateway._panel_online is True
-    assert gateway._peer_boot_id == 0xAABBCCDD
+    assert gateway.peer_boot_id == 0xAABBCCDD
     assert len(gateway._hello_calls) == 1
     assert any(
         isinstance(e, PanelConnectivityChanged) and e.online
@@ -85,7 +86,7 @@ async def test_malformed_hello_too_short(gateway: UartGateway) -> None:
     await gateway._dispatch(frame)
 
     assert gateway._panel_online is False
-    assert gateway._peer_boot_id is None
+    assert gateway.peer_boot_id is None
     assert len(gateway._hello_calls) == 0
     assert len(gateway._events) == 0
 
@@ -100,7 +101,7 @@ async def test_malformed_hello_empty_payload(gateway: UartGateway) -> None:
     await gateway._dispatch(frame)
 
     assert gateway._panel_online is False
-    assert gateway._peer_boot_id is None
+    assert gateway.peer_boot_id is None
     assert len(gateway._hello_calls) == 0
 
 
@@ -119,14 +120,14 @@ async def test_malformed_hello_does_not_change_existing_session(
         software_version="t5/1.0",
     )
     await gateway._dispatch(_make_hello_frame(valid_payload, seq=1))
-    assert gateway._peer_boot_id == 0x11111111
+    assert gateway.peer_boot_id == 0x11111111
     assert gateway._panel_online is True
 
     # Then: malformed hello
     await gateway._dispatch(_make_hello_frame(b"\xFF", seq=2))
 
     # Session unchanged
-    assert gateway._peer_boot_id == 0x11111111
+    assert gateway.peer_boot_id == 0x11111111
     assert gateway._panel_online is True
 
 
@@ -142,7 +143,7 @@ async def test_new_boot_id_updates_session(gateway: UartGateway) -> None:
         software_version="t5/1.0",
     )
     await gateway._dispatch(_make_hello_frame(payload1, seq=1))
-    assert gateway._peer_boot_id == 0xAAAAAAAA
+    assert gateway.peer_boot_id == 0xAAAAAAAA
 
     payload2 = proto.encode_hello(
         peer_role=0x01,
@@ -154,5 +155,5 @@ async def test_new_boot_id_updates_session(gateway: UartGateway) -> None:
         software_version="t5/1.0",
     )
     await gateway._dispatch(_make_hello_frame(payload2, seq=2))
-    assert gateway._peer_boot_id == 0xBBBBBBBB
+    assert gateway.peer_boot_id == 0xBBBBBBBB
     assert len(gateway._hello_calls) == 2
