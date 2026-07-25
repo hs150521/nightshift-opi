@@ -1,0 +1,19 @@
+[Unit]
+Description=Nightshift AP (hostapd + dnsmasq on ap0)
+After=sys-subsystem-net-devices-wlan0.device
+Before=netplan-wpa-wlan0.service
+ConditionPathExists=/sys/class/net/wlan0
+
+[Service]
+Type=forking
+PIDFile=/run/nightshift-hostapd.pid
+ExecStart=/usr/local/sbin/nightshift-ap-start
+ExecStartPost=/bin/sh -c 'sleep 3 && wpa_cli -i wlan0 set bgscan "" && wpa_cli -i wlan0 scan_interval 3600 || true'
+ExecStop=/bin/sh -c '[ -f /run/nightshift-dnsmasq.pid ] && kill $(cat /run/nightshift-dnsmasq.pid) || true'
+ExecStop=/bin/sh -c '[ -f /run/nightshift-hostapd.pid ] && kill $(cat /run/nightshift-hostapd.pid) || true'
+ExecStopPost=/usr/local/sbin/nightshift-ap-down
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

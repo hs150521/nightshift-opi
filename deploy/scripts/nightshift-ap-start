@@ -1,0 +1,48 @@
+#!/bin/bash
+# Start Nightshift AP: create ap0, run hostapd, then dnsmasq.
+# CRITICAL: hostapd MUST register frames before wpa_supplicant to avoid
+# brcmfmac nl80211 frame registration conflicts on shared phy.
+set -e
+
+# If wpa_supplicant is running, stop it temporarily so hostapd registers first
+WPA_WAS_RUNNING=false
+if systemctl is-active --quiet netplan-wpa-wlan0.service 2>/dev/null; then
+    WPA_WAS_RUNNING=true
+    systemctl stop netplan-wpa-wlan0.service || true
+    sleep 0.5
+fi
+
+# Remove stale ap0 if present
+if ip link show ap0 >/dev/null 2>&1; then
+    ip link set ap0 down 2>/dev/null || true
+    iw dev ap0 del 2>/dev/null || true
+    sleep 0.3
+fi
+
+# Create fresh ap0 from wlan0
+iw dev wlan0 interface add ap0 type __ap
+ip link set ap0 address 42:fd:f3:bc:4e:5c
+ip addr flush dev ap0
+ip link set ap0 up
+
+# Start hostapd FIRST (registers for auth frames before wpa_supplicant)
+/usr/sbin/hostapd -B -P /run/nightshift-hostapd.pid /etc/hostapd/nightshift-ap.conf
+
+# Assert IP and start dnsmasq
+for _ in 1 2 3 4 5; do
+    ip addr show ap0 | grep -q 'inet 192.168.51.1' && break
+    ip addr add 192.168.51.1/24 dev ap0 2>/dev/null || true
+    sleep 0.5
+done
+ip addr show ap0
+
+/usr/sbin/dnsmasq --conf-file=/etc/nightshift-ap/dnsmasq.conf --pid-file=/run/nightshift-dnsmasq.pid
+
+# Restart wpa_supplicant if it was running
+if [ "$WPA_WAS_RUNNING" = true ]; then
+    systemctl start netplan-wpa-wlan0.service || true
+    sleep 2
+    # Disable background scanning to prevent AP disruption
+    wpa_cli -i wlan0 set bgscan "" 2>/dev/null || true
+    wpa_cli -i wlan0 scan_interval 3600 2>/dev/null || true
+fi
