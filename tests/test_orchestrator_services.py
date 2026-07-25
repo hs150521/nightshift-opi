@@ -1,0 +1,133 @@
+"""Tests for orchestrator UI action routing with real services."""
+
+import pytest
+
+from nightshift.domain.commands import (
+    ACTION_CONFIRM,
+    ACTION_DISMISS_NOTICE,
+    ACTION_REJECT,
+    ACTION_RETRY,
+    NOT_FOUND,
+    NOT_READY,
+    OBJ_NOTICE,
+    OBJ_TASK,
+    OK,
+)
+from nightshift.domain.events import UiAction
+from nightshift.domain.models import AttentionFlag
+from nightshift.domain.pressure_mock import MockPressureSource
+from nightshift.hardware.uart.gateway import UartConfig
+from nightshift.persistence.database import Database
+from nightshift.services.orchestrator import NightshiftOrchestrator
+from nightshift.services.task_service import TaskState
+
+
+@pytest.fixture
+async def db(tmp_path):
+    database = Database(tmp_path / "test.db")
+    await database.open()
+    yield database
+    await database.close()
+
+
+@pytest.fixture
+def orchestrator(db):
+    pressure = MockPressureSource()
+    config = UartConfig(device="/dev/null", baudrate=460800)
+    orch = NightshiftOrchestrator(pressure, config, db=db)
+    return orch
+
+
+def _ui_action(action, object_type=0, object_id=0):
+    return UiAction(action=action, object_type=object_type, object_id=object_id, value=0, text="")
+
+
+async def test_confirm_task_returns_ok(orchestrator, db):
+    task_svc = orchestrator._task_service
+    task = await task_svc.create(quadrant=0, title="Test", now_ms=1000)
+    event = _ui_action(ACTION_CONFIRM, OBJ_TASK, task.id)
+    status, _ = await orchestrator._handle_ui_action(event)
+    assert status == OK
+    updated = await task_svc.get(task.id)
+    assert updated.state == TaskState.ACTIVE
+
+
+async def test_confirm_updates_confirmation_count(orchestrator, db):
+    task_svc = orchestrator._task_service
+    await task_svc.create(quadrant=0, title="A", now_ms=1000)
+    t2 = await task_svc.create(quadrant=0, title="B", now_ms=2000)
+    event = _ui_action(ACTION_CONFIRM, OBJ_TASK, t2.id)
+    await orchestrator._handle_ui_action(event)
+    assert orchestrator.state.confirmation_count == 1
+    assert AttentionFlag.NEED_CONFIRM in orchestrator.state.attention
+
+
+async def test_confirm_clears_need_confirm_when_all_resolved(orchestrator, db):
+    task_svc = orchestrator._task_service
+    t1 = await task_svc.create(quadrant=0, title="Only", now_ms=1000)
+    event = _ui_action(ACTION_CONFIRM, OBJ_TASK, t1.id)
+    await orchestrator._handle_ui_action(event)
+    assert orchestrator.state.confirmation_count == 0
+    assert AttentionFlag.NEED_CONFIRM not in orchestrator.state.attention
+
+
+async def test_reject_task_returns_ok(orchestrator, db):
+    task_svc = orchestrator._task_service
+    task = await task_svc.create(quadrant=0, title="Test", now_ms=1000)
+    event = _ui_action(ACTION_REJECT, OBJ_TASK, task.id)
+    status, _ = await orchestrator._handle_ui_action(event)
+    assert status == OK
+
+
+async def test_confirm_nonexistent_returns_not_found(orchestrator):
+    event = _ui_action(ACTION_CONFIRM, OBJ_TASK, 999)
+    status, _ = await orchestrator._handle_ui_action(event)
+    assert status == NOT_FOUND
+
+
+async def test_retry_failed_task_returns_ok(orchestrator, db):
+    task_svc = orchestrator._task_service
+    task = await task_svc.create(quadrant=0, title="Test", now_ms=1000)
+    await task_svc.confirm(task.id, now_ms=2000)
+    await task_svc.fail(task.id, now_ms=3000)
+    event = _ui_action(ACTION_RETRY, OBJ_TASK, task.id)
+    status, _ = await orchestrator._handle_ui_action(event)
+    assert status == OK
+    updated = await task_svc.get(task.id)
+    assert updated.state == TaskState.PENDING
+
+
+async def test_retry_non_failed_returns_not_found(orchestrator, db):
+    task_svc = orchestrator._task_service
+    task = await task_svc.create(quadrant=0, title="Test", now_ms=1000)
+    event = _ui_action(ACTION_RETRY, OBJ_TASK, task.id)
+    status, _ = await orchestrator._handle_ui_action(event)
+    assert status == NOT_FOUND
+
+
+async def test_dismiss_notice_returns_ok(orchestrator, db):
+    notice_svc = orchestrator._notice_service
+    notice = await notice_svc.create(title="Alert", now_ms=1000)
+    event = _ui_action(ACTION_DISMISS_NOTICE, OBJ_NOTICE, notice.id)
+    status, _ = await orchestrator._handle_ui_action(event)
+    assert status == OK
+    updated = await notice_svc.get(notice.id)
+    assert updated.dismissed_at_ms is not None
+
+
+async def test_dismiss_already_dismissed_returns_not_found(orchestrator, db):
+    notice_svc = orchestrator._notice_service
+    notice = await notice_svc.create(title="Alert", now_ms=1000)
+    await notice_svc.dismiss(notice.id, now_ms=2000)
+    event = _ui_action(ACTION_DISMISS_NOTICE, OBJ_NOTICE, notice.id)
+    status, _ = await orchestrator._handle_ui_action(event)
+    assert status == NOT_FOUND
+
+
+async def test_no_db_returns_not_ready():
+    pressure = MockPressureSource()
+    config = UartConfig(device="/dev/null", baudrate=460800)
+    orch = NightshiftOrchestrator(pressure, config)
+    event = _ui_action(ACTION_CONFIRM, OBJ_TASK, 1)
+    status, _ = await orch._handle_ui_action(event)
+    assert status == NOT_READY

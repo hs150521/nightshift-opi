@@ -39,6 +39,11 @@ from nightshift.domain.pressure import PressureSource, PressureState
 from nightshift.domain.state_machine import StateMachineV2
 from nightshift.hardware.uart import protocol as proto
 from nightshift.hardware.uart.gateway import UartConfig, UartGateway
+from nightshift.persistence.database import Database
+from nightshift.services.confirmation_service import ConfirmationError, ConfirmationService
+from nightshift.services.executor_service import ExecutorError, ExecutorService
+from nightshift.services.notice_service import NoticeService
+from nightshift.services.task_service import TaskService
 
 logger = structlog.get_logger()
 
@@ -54,6 +59,7 @@ class NightshiftOrchestrator:
         pressure_source: PressureSource,
         uart_config: UartConfig,
         *,
+        db: Database | None = None,
         dwell_ms: int | None = None,
         stale_ms: int | None = None,
         tick_interval_ms: float = 250.0,
@@ -68,6 +74,19 @@ class NightshiftOrchestrator:
         if stale_ms is not None:
             sm_kwargs["stale_ms"] = stale_ms
         self._state_machine = StateMachineV2(**sm_kwargs)
+
+        self._db = db
+        if db is not None:
+            self._task_service: TaskService | None = TaskService(db)
+            self._notice_service: NoticeService | None = NoticeService(db)
+            self._confirmation_service: ConfirmationService | None = ConfirmationService(
+                db, self._task_service, self._notice_service
+            )
+        else:
+            self._task_service = None
+            self._notice_service = None
+            self._confirmation_service = None
+        self._executor_service = ExecutorService()
 
         now = int(time.monotonic() * 1000)
         self._state = SystemState(
@@ -117,15 +136,25 @@ class NightshiftOrchestrator:
         self._event_listeners.append(listener)
 
     async def pause_executor(self) -> None:
+        try:
+            new_state = self._executor_service.pause()
+        except ExecutorError:
+            logger.warning("pause_executor_invalid_transition", current=self._executor_service.state.value)
+            return
         self._state = self._state.evolve(
-            work_state=WorkState.PAUSED,
+            work_state=new_state,
             updated_at_ms=int(time.monotonic() * 1000),
         )
         await self._publish_state()
 
     async def resume_executor(self) -> None:
+        try:
+            new_state = self._executor_service.resume()
+        except ExecutorError:
+            logger.warning("resume_executor_invalid_transition", current=self._executor_service.state.value)
+            return
         self._state = self._state.evolve(
-            work_state=WorkState.RUNNING,
+            work_state=new_state,
             updated_at_ms=int(time.monotonic() * 1000),
         )
         await self._publish_state()
@@ -333,15 +362,75 @@ class NightshiftOrchestrator:
         elif action == cmd.ACTION_REQUEST_RESYNC:
             await self._full_sync()
             return cmd.OK, b""
-        elif action in (
-            cmd.ACTION_CONFIRM,
-            cmd.ACTION_REJECT,
-            cmd.ACTION_RETRY,
-            cmd.ACTION_DISMISS_NOTICE,
-        ):
-            return cmd.NOT_READY, b""
+        elif action == cmd.ACTION_CONFIRM:
+            return await self._handle_confirm(event)
+        elif action == cmd.ACTION_REJECT:
+            return await self._handle_reject(event)
+        elif action == cmd.ACTION_RETRY:
+            return await self._handle_retry(event)
+        elif action == cmd.ACTION_DISMISS_NOTICE:
+            return await self._handle_dismiss_notice(event)
         else:
             return cmd.OK, b""
+
+    async def _handle_confirm(self, event: UiAction) -> tuple[int, bytes]:
+        if self._confirmation_service is None:
+            return cmd.NOT_READY, b""
+        now_ms = int(time.monotonic() * 1000)
+        try:
+            result = await self._confirmation_service.confirm(
+                event.object_type, event.object_id, now_ms=now_ms
+            )
+        except ConfirmationError:
+            return cmd.NOT_FOUND, b""
+        await self._update_confirmation_count(result.pending_count, now_ms)
+        return cmd.OK, b""
+
+    async def _handle_reject(self, event: UiAction) -> tuple[int, bytes]:
+        if self._confirmation_service is None:
+            return cmd.NOT_READY, b""
+        now_ms = int(time.monotonic() * 1000)
+        try:
+            result = await self._confirmation_service.reject(
+                event.object_type, event.object_id, now_ms=now_ms
+            )
+        except ConfirmationError:
+            return cmd.NOT_FOUND, b""
+        await self._update_confirmation_count(result.pending_count, now_ms)
+        return cmd.OK, b""
+
+    async def _handle_retry(self, event: UiAction) -> tuple[int, bytes]:
+        if self._task_service is None:
+            return cmd.NOT_READY, b""
+        now_ms = int(time.monotonic() * 1000)
+        task = await self._task_service.retry(event.object_id, now_ms=now_ms)
+        if task is None:
+            return cmd.NOT_FOUND, b""
+        pending = await self._task_service.count_pending()
+        await self._update_confirmation_count(pending, now_ms)
+        return cmd.OK, b""
+
+    async def _handle_dismiss_notice(self, event: UiAction) -> tuple[int, bytes]:
+        if self._notice_service is None:
+            return cmd.NOT_READY, b""
+        now_ms = int(time.monotonic() * 1000)
+        notice = await self._notice_service.dismiss(event.object_id, now_ms=now_ms)
+        if notice is None:
+            return cmd.NOT_FOUND, b""
+        return cmd.OK, b""
+
+    async def _update_confirmation_count(self, pending_count: int, now_ms: int) -> None:
+        attention = self._state.attention
+        if pending_count > 0:
+            attention = attention | AttentionFlag.NEED_CONFIRM
+        else:
+            attention = attention & ~AttentionFlag.NEED_CONFIRM
+        self._state = self._state.evolve(
+            confirmation_count=pending_count,
+            attention=attention,
+            updated_at_ms=now_ms,
+        )
+        await self._publish_state()
 
     async def _on_panel_hello(self) -> None:
         await self._full_sync()
