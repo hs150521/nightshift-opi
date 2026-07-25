@@ -26,6 +26,7 @@ t5_link_v1:
     UNSUPPORTED_VERSION: 0x0009
     NO_SPACE: 0x000A
     STATE_CONFLICT: 0x000B
+    NOT_IMPLEMENTED: 0x000C
 
   capabilities:
     LCD: 0x0001
@@ -63,6 +64,7 @@ t5_link_v1:
     NEXT_PAGE: 10
     PREVIOUS_PAGE: 11
     DISMISS_NOTICE: 12
+    REQUEST_RESYNC: 13
 
   commands:
     # System
@@ -118,13 +120,28 @@ t5_link_v1:
       request:
         - { name: uptime_ms, type: u32 }
         - { name: state_revision, type: u32 }
-      # Response is exactly 14 bytes. This layout is frozen by T5 firmware.
+      # Canonical `<HIII>` response, exactly 14 bytes. Frozen contract
+      # shared with T5 firmware. Non-OK status means T5 did not commit
+      # the reported applied_revision; error_flags encodes T5-side faults.
       response:
-        - { name: state, type: u8 }
-        - { name: mode, type: u8 }
-        - { name: revision, type: u32 }
-        - { name: tokens_in, type: u32 }
-        - { name: tokens_out, type: u32 }
+        - { name: status, type: u16 }
+        - { name: t5_uptime_ms, type: u32 }
+        - { name: applied_revision, type: u32 }
+        - { name: error_flags, type: u32 }
+
+    GET_INFO:
+      request: []
+      response:
+        - { name: status, type: u16 }
+        - { name: hardware_id, type: u32 }
+        - { name: uptime_ms, type: u32 }
+        - { name: capability_flags, type: u16 }
+        - { name: firmware_version, type: string }
+
+    TIME_SYNC:
+      request:
+        - { name: now_ms, type: u64 }
+        - { name: tz_offset_minutes, type: i16 }
 
     STATE_SYNC_BEGIN:
       request:
@@ -172,6 +189,37 @@ t5_link_v1:
         - { name: completed_today, type: u16 }
         - { name: failed_today, type: u16 }
 
+    NOTICE_SHOW:
+      request:
+        - { name: revision, type: u32 }
+        - { name: notice_id, type: u32 }
+        - { name: severity, type: u8 }
+        - { name: ttl_ms, type: u32 }
+        - { name: title, type: string }
+        - { name: body, type: string }
+
+    TASK_LIST_BEGIN:
+      request:
+        - { name: revision, type: u32 }
+        - { name: total, type: u16 }
+        - { name: reason, type: u8 }
+
+    TASK_ITEM:
+      request:
+        - { name: revision, type: u32 }
+        - { name: index, type: u16 }
+        - { name: task_id, type: u32 }
+        - { name: status, type: u8 }
+        - { name: priority, type: u8 }
+        - { name: progress_permille, type: u16 }
+        - { name: requires_confirmation, type: u8 }
+        - { name: title, type: string }
+
+    TASK_LIST_END:
+      request:
+        - { name: revision, type: u32 }
+        - { name: snapshot_crc32, type: u32 }
+
     UI_ACTION:
       event:
         - { name: action, type: u16 }
@@ -179,3 +227,21 @@ t5_link_v1:
         - { name: object_id, type: u32 }
         - { name: value, type: i32 }
         - { name: text, type: string }
+
+    PAGE_EVENT:
+      event:
+        - { name: page_id, type: u16 }
+        - { name: action, type: u8 }
+        - { name: param, type: u32 }
+
+    LED_OVERRIDE:
+      request:
+        - { name: pattern, type: u8 }
+        - { name: color_rgb, type: u32 }
+        - { name: duration_ms, type: u32 }
+        - { name: priority, type: u8 }
+
+    BACKLIGHT_SET:
+      request:
+        - { name: brightness_pct, type: u8 }
+        - { name: duration_ms, type: u32 }

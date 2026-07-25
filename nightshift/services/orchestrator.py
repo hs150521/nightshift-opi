@@ -20,6 +20,7 @@ import structlog
 from nightshift.domain import commands as cmd
 from nightshift.domain.events import (
     DomainEvent,
+    HeartbeatFailed,
     HeartbeatReceived,
     ModeChanged,
     PanelConnectivityChanged,
@@ -29,6 +30,7 @@ from nightshift.domain.events import (
 from nightshift.domain.models import (
     AttentionFlag,
     DashboardState,
+    PanelTelemetry,
     SystemMode,
     SystemState,
     WorkState,
@@ -269,25 +271,52 @@ class NightshiftOrchestrator:
 
     def _on_event(self, event: DomainEvent) -> None:
         if isinstance(event, HeartbeatReceived):
-            panel_online = self._state.panel_online
+            was_online = self._state.panel_online
+            telemetry = PanelTelemetry(
+                t5_uptime_ms=event.t5_uptime_ms,
+                error_flags=event.error_flags,
+                applied_revision=event.applied_revision,
+                last_heartbeat_at_ms=event.received_at_ms,
+            )
+            attention = self._state.attention & ~AttentionFlag.PANEL_OFFLINE
             self._state = self._state.evolve(
                 panel_online=True,
-                updated_at_ms=int(time.monotonic() * 1000),
+                attention=attention,
+                panel_telemetry=telemetry,
+                updated_at_ms=event.received_at_ms or int(time.monotonic() * 1000),
+                bump_revision=False,
             )
-            if not panel_online:
+            if not was_online:
+                logger.info(
+                    "panel_online",
+                    applied_revision=event.applied_revision,
+                    t5_uptime_ms=event.t5_uptime_ms,
+                )
                 asyncio.create_task(self._full_sync())
+        elif isinstance(event, HeartbeatFailed):
+            logger.warning(
+                "heartbeat_failed",
+                status=event.status,
+                error_flags=event.error_flags,
+            )
+            # No state mutation: transport still up, T5 just refused to
+            # commit this revision. applied_revision was not advanced by
+            # the gateway either.
         elif isinstance(event, PanelConnectivityChanged):
             attention = self._state.attention
             if not event.online:
                 attention = attention | AttentionFlag.PANEL_OFFLINE
             else:
                 attention = attention & ~AttentionFlag.PANEL_OFFLINE
+            attention_changed = attention != self._state.attention
             self._state = self._state.evolve(
                 panel_online=event.online,
                 attention=attention,
                 updated_at_ms=int(time.monotonic() * 1000),
+                bump_revision=False,
             )
-            asyncio.create_task(self._publish_state())
+            if attention_changed:
+                asyncio.create_task(self._publish_state())
         elif isinstance(event, UiAction):
             logger.info("ui_action_received", action=event.action, object_id=event.object_id)
             # TODO: forward to confirmation/task service once implemented.

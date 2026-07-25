@@ -60,11 +60,37 @@ class UiAction:
 
 @dataclass(frozen=True)
 class HeartbeatReceived:
-    state: int
-    mode: int
-    revision: int
-    tokens_in: int
-    tokens_out: int
+    """T5 heartbeat response payload (canonical `<HIII>` layout).
+
+    `status` is a T5-Link status code. `applied_revision` is the last
+    OPI-authored `SystemState.revision` that T5 has committed to its
+    display. `t5_uptime_ms` and `error_flags` are diagnostic-only.
+    """
+
+    status: int
+    t5_uptime_ms: int
+    applied_revision: int
+    error_flags: int
+    received_at_ms: int = 0
+
+
+@dataclass(frozen=True)
+class HeartbeatFailed:
+    """Heartbeat completed but T5 returned a non-OK status."""
+
+    status: int
+    error_flags: int
+    occurred_at_ms: int = 0
+
+
+@dataclass(frozen=True)
+class PageEvent:
+    """T5 emits this when the user changes page or triggers a page-scoped hook."""
+
+    page_id: int
+    action: int
+    param: int
+    occurred_at_ms: int = 0
 
 
 DomainEvent = (
@@ -75,4 +101,6 @@ DomainEvent = (
     | PanelConnectivityChanged
     | UiAction
     | HeartbeatReceived
+    | HeartbeatFailed
+    | PageEvent
 )

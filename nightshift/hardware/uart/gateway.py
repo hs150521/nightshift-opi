@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from nightshift.domain import commands as cmd
-from nightshift.domain.events import HeartbeatReceived, PanelConnectivityChanged, UiAction
+from nightshift.domain.events import (
+    HeartbeatFailed,
+    HeartbeatReceived,
+    PageEvent,
+    PanelConnectivityChanged,
+    UiAction,
+)
 from nightshift.hardware.uart import protocol as proto
 from nightshift.hardware.uart.codec import stuff_frame, unstuff_frame
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -31,19 +40,30 @@ class UartGateway:
         config: UartConfig,
         on_event: Callable[[Any], None] | None = None,
         on_panel_hello: Callable[[], Any] | None = None,
+        on_peer_boot_id_change: Callable[[int | None, int], None] | None = None,
     ) -> None:
         self._config = config
         self._on_event = on_event
         self._on_panel_hello = on_panel_hello
+        self._on_peer_boot_id_change = on_peer_boot_id_change
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._sequence = 0
         self._boot_id = int(time.monotonic() * 1000) & 0xFFFFFFFF
+        self._peer_boot_id: int | None = None
         self._pending: dict[int, asyncio.Future[proto.Frame]] = {}
         self._last_applied_revision = 0
         self._panel_online = False
         self._read_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
+
+    @property
+    def peer_boot_id(self) -> int | None:
+        return self._peer_boot_id
+
+    @property
+    def last_applied_revision(self) -> int:
+        return self._last_applied_revision
 
     async def start(self) -> None:
         await self._connect()
@@ -162,6 +182,18 @@ class UartGateway:
             # Panel-initiated handshake (reboot/reconnect). ACK first with the
             # original sequence, then trigger a snapshot resync.
             await self._send_ack(frame, cmd.OK)
+            try:
+                hello = proto.parse_hello(frame.payload)
+                previous_boot_id = self._peer_boot_id
+                if previous_boot_id != hello.boot_id:
+                    self._peer_boot_id = hello.boot_id
+                    if self._on_peer_boot_id_change:
+                        try:
+                            self._on_peer_boot_id_change(previous_boot_id, hello.boot_id)
+                        except Exception:
+                            logger.exception("on_peer_boot_id_change failed")
+            except proto.ProtocolError:
+                logger.warning("failed to parse HELLO payload")
             if self._on_panel_hello:
                 try:
                     result = self._on_panel_hello()
@@ -194,11 +226,34 @@ class UartGateway:
                 await self._send_ack(frame, cmd.OK)
             return
 
+        if frame.command == cmd.PAGE_EVENT:
+            try:
+                page = proto.parse_page_event(frame.payload)
+                if self._on_event:
+                    self._on_event(
+                        PageEvent(
+                            page_id=page.page_id,
+                            action=page.action,
+                            param=page.param,
+                            occurred_at_ms=int(time.monotonic() * 1000),
+                        )
+                    )
+            except proto.ProtocolError:
+                logger.warning("failed to parse PAGE_EVENT payload")
+            if frame.flags & cmd.FLAG_ACK_REQ:
+                await self._send_ack(frame, cmd.OK)
+            return
+
         # Unknown events are acknowledged (preserving sequence) but ignored.
         if frame.flags & cmd.FLAG_ACK_REQ:
             await self._send_ack(frame, cmd.OK)
 
-    async def _send_ack(self, frame: proto.Frame, status: int) -> None:
+    async def _send_ack(
+        self,
+        frame: proto.Frame,
+        status: int,
+        data: bytes = b"",
+    ) -> None:
         if self._writer is None:
             return
         ack = proto.Frame(
@@ -206,7 +261,7 @@ class UartGateway:
             flags=cmd.FLAG_RESPONSE,
             sequence=frame.sequence,
             command=frame.command,
-            payload=status.to_bytes(2, "little"),
+            payload=status.to_bytes(2, "little") + data,
         )
         self._writer.write(stuff_frame(ack.raw))
 
@@ -218,22 +273,38 @@ class UartGateway:
                 payload = proto.encode_heartbeat(uptime, self._last_applied_revision)
                 try:
                     resp = await self.send(cmd.HEARTBEAT, payload, timeout_ms=200)
-                    info = proto.parse_heartbeat_response(resp.payload)
-                    self._last_applied_revision = info["revision"]
-                    if not self._panel_online:
-                        self._panel_online = True
+                    status = proto.parse_heartbeat_response(resp.payload)
+                    received_at_ms = int(time.monotonic() * 1000)
+                    if status.status == cmd.OK:
+                        self._last_applied_revision = status.applied_revision
+                        if not self._panel_online:
+                            self._panel_online = True
+                            if self._on_event:
+                                self._on_event(PanelConnectivityChanged(online=True))
                         if self._on_event:
-                            self._on_event(PanelConnectivityChanged(online=True))
-                    if self._on_event:
-                        self._on_event(
-                            HeartbeatReceived(
-                                state=info["state"],
-                                mode=info["mode"],
-                                revision=info["revision"],
-                                tokens_in=info["tokens_in"],
-                                tokens_out=info["tokens_out"],
+                            self._on_event(
+                                HeartbeatReceived(
+                                    status=status.status,
+                                    t5_uptime_ms=status.t5_uptime_ms,
+                                    applied_revision=status.applied_revision,
+                                    error_flags=status.error_flags,
+                                    received_at_ms=received_at_ms,
+                                )
                             )
+                    else:
+                        logger.warning(
+                            "heartbeat non-ok: status=0x%04x error_flags=0x%08x",
+                            status.status,
+                            status.error_flags,
                         )
+                        if self._on_event:
+                            self._on_event(
+                                HeartbeatFailed(
+                                    status=status.status,
+                                    error_flags=status.error_flags,
+                                    occurred_at_ms=received_at_ms,
+                                )
+                            )
                 except TimeoutError:
                     if self._panel_online:
                         self._panel_online = False

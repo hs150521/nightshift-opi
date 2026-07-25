@@ -1,4 +1,4 @@
-"""T5-Link v1 frame builder and parser."""
+"""T5-Link v1 frame builder and parser (canonical wire format)."""
 
 from __future__ import annotations
 
@@ -91,7 +91,51 @@ class Frame:
         )
 
 
-# Payload builders
+# ---------------------------------------------------------------------------
+# Canonical dataclasses for parsed responses / events
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HelloInfo:
+    peer_role: int
+    protocol_major: int
+    protocol_minor: int
+    boot_id: int
+    max_payload: int
+    capabilities: int
+    software_version: str
+
+
+@dataclass(frozen=True)
+class HeartbeatStatus:
+    """Canonical HEARTBEAT response payload: `<HIII>`, exactly 14 bytes."""
+
+    status: int
+    t5_uptime_ms: int
+    applied_revision: int
+    error_flags: int
+
+
+@dataclass(frozen=True)
+class GetInfoResponse:
+    status: int
+    hardware_id: int
+    uptime_ms: int
+    capability_flags: int
+    firmware_version: str
+
+
+@dataclass(frozen=True)
+class PageEventPayload:
+    page_id: int
+    action: int
+    param: int
+
+
+# ---------------------------------------------------------------------------
+# Encoders (OPI -> T5)
+# ---------------------------------------------------------------------------
 
 
 def encode_hello(
@@ -116,6 +160,26 @@ def encode_hello(
 
 def encode_heartbeat(uptime_ms: int, state_revision: int) -> bytes:
     return struct.pack("<II", uptime_ms, state_revision)
+
+
+def encode_heartbeat_response(
+    status: int,
+    t5_uptime_ms: int,
+    applied_revision: int,
+    error_flags: int,
+) -> bytes:
+    """Canonical T5->OPI heartbeat response, 14 bytes.
+
+    Only used by the golden-vector regenerator; the real T5 firmware
+    produces this payload directly.
+    """
+    return struct.pack(
+        "<HIII",
+        status & 0xFFFF,
+        t5_uptime_ms & 0xFFFFFFFF,
+        applied_revision & 0xFFFFFFFF,
+        error_flags & 0xFFFFFFFF,
+    )
 
 
 def encode_state_sync_begin(revision: int, reason: int) -> bytes:
@@ -208,25 +272,201 @@ def encode_ui_action(
     ) + _encode_string(text)
 
 
-def parse_heartbeat_response(payload: bytes) -> dict[str, int]:
+# --- Canonical extensions -------------------------------------------------
+
+
+def encode_get_info_request() -> bytes:
+    return b""
+
+
+def encode_get_info_response(
+    status: int,
+    hardware_id: int,
+    uptime_ms: int,
+    capability_flags: int,
+    firmware_version: str,
+) -> bytes:
+    return struct.pack(
+        "<HIIH",
+        status & 0xFFFF,
+        hardware_id & 0xFFFFFFFF,
+        uptime_ms & 0xFFFFFFFF,
+        capability_flags & 0xFFFF,
+    ) + _encode_string(firmware_version)
+
+
+def encode_time_sync(now_ms: int, tz_offset_minutes: int) -> bytes:
+    return struct.pack("<Qh", now_ms & 0xFFFFFFFFFFFFFFFF, tz_offset_minutes)
+
+
+def encode_notice_show(
+    revision: int,
+    notice_id: int,
+    severity: int,
+    ttl_ms: int,
+    title: str,
+    body: str,
+) -> bytes:
+    return (
+        struct.pack(
+            "<IIBI",
+            revision & 0xFFFFFFFF,
+            notice_id & 0xFFFFFFFF,
+            severity & 0xFF,
+            ttl_ms & 0xFFFFFFFF,
+        )
+        + _encode_string(title)
+        + _encode_string(body)
+    )
+
+
+def encode_task_list_begin(revision: int, total: int, reason: int) -> bytes:
+    return struct.pack(
+        "<IHB",
+        revision & 0xFFFFFFFF,
+        total & 0xFFFF,
+        reason & 0xFF,
+    )
+
+
+def encode_task_item(
+    revision: int,
+    index: int,
+    task_id: int,
+    status: int,
+    priority: int,
+    progress_permille: int,
+    requires_confirmation: int,
+    title: str,
+) -> bytes:
+    return (
+        struct.pack(
+            "<IHIBBHB",
+            revision & 0xFFFFFFFF,
+            index & 0xFFFF,
+            task_id & 0xFFFFFFFF,
+            status & 0xFF,
+            priority & 0xFF,
+            progress_permille & 0xFFFF,
+            requires_confirmation & 0xFF,
+        )
+        + _encode_string(title)
+    )
+
+
+def encode_task_list_end(revision: int, snapshot_crc32: int) -> bytes:
+    return struct.pack(
+        "<II",
+        revision & 0xFFFFFFFF,
+        snapshot_crc32 & 0xFFFFFFFF,
+    )
+
+
+def encode_led_override(
+    pattern: int,
+    color_rgb: int,
+    duration_ms: int,
+    priority: int,
+) -> bytes:
+    return struct.pack(
+        "<BIIB",
+        pattern & 0xFF,
+        color_rgb & 0xFFFFFFFF,
+        duration_ms & 0xFFFFFFFF,
+        priority & 0xFF,
+    )
+
+
+def encode_backlight_set(brightness_pct: int, duration_ms: int) -> bytes:
+    return struct.pack(
+        "<BI",
+        brightness_pct & 0xFF,
+        duration_ms & 0xFFFFFFFF,
+    )
+
+
+def encode_page_event(page_id: int, action: int, param: int) -> bytes:
+    """Only used by the golden-vector regenerator. T5 emits these."""
+    return struct.pack(
+        "<HBI",
+        page_id & 0xFFFF,
+        action & 0xFF,
+        param & 0xFFFFFFFF,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parsers (T5 -> OPI)
+# ---------------------------------------------------------------------------
+
+
+def parse_hello(payload: bytes) -> HelloInfo:
+    if len(payload) < 11:
+        raise ProtocolError("hello payload too short")
+    peer_role, major, minor, boot_id, max_payload, capabilities = struct.unpack(
+        "<BBBIHH", payload[:11]
+    )
+    version = _decode_string(payload[11:])
+    return HelloInfo(
+        peer_role=peer_role,
+        protocol_major=major,
+        protocol_minor=minor,
+        boot_id=boot_id,
+        max_payload=max_payload,
+        capabilities=capabilities,
+        software_version=version,
+    )
+
+
+def parse_heartbeat_response(payload: bytes) -> HeartbeatStatus:
+    """Parse the canonical `<HIII>` heartbeat response (14 bytes)."""
     if len(payload) < 14:
         raise ProtocolError("heartbeat response too short")
-    state, mode, revision, tokens_in, tokens_out = struct.unpack("<BBIII", payload[:14])
-    return {
-        "state": state,
-        "mode": mode,
-        "revision": revision,
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-    }
+    status, t5_uptime_ms, applied_revision, error_flags = struct.unpack(
+        "<HIII", payload[:14]
+    )
+    return HeartbeatStatus(
+        status=status,
+        t5_uptime_ms=t5_uptime_ms,
+        applied_revision=applied_revision,
+        error_flags=error_flags,
+    )
+
+
+def parse_get_info_response(payload: bytes) -> GetInfoResponse:
+    if len(payload) < 12:
+        raise ProtocolError("get_info response too short")
+    status, hardware_id, uptime_ms, capability_flags = struct.unpack(
+        "<HIIH", payload[:12]
+    )
+    firmware_version = _decode_string(payload[12:])
+    return GetInfoResponse(
+        status=status,
+        hardware_id=hardware_id,
+        uptime_ms=uptime_ms,
+        capability_flags=capability_flags,
+        firmware_version=firmware_version,
+    )
 
 
 def parse_ui_action(payload: bytes) -> tuple[int, int, int, int, str]:
-    if len(payload) < 10:
+    if len(payload) < 11:
         raise ProtocolError("ui_action payload too short")
-    action, object_type, object_id, value = struct.unpack("<HBIi", payload[:10])
-    text = _decode_string(payload[10:])
+    action, object_type, object_id, value = struct.unpack("<HBIi", payload[:11])
+    text = _decode_string(payload[11:])
     return action, object_type, object_id, value, text
+
+
+def parse_page_event(payload: bytes) -> PageEventPayload:
+    if len(payload) < 7:
+        raise ProtocolError("page_event payload too short")
+    page_id, action, param = struct.unpack("<HBI", payload[:7])
+    return PageEventPayload(page_id=page_id, action=action, param=param)
+
+
+# ---------------------------------------------------------------------------
+# String helpers (2-byte little-endian length prefix + utf-8)
+# ---------------------------------------------------------------------------
 
 
 def _encode_string(text: str) -> bytes:
