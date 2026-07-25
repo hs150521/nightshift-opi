@@ -1,7 +1,7 @@
 [Unit]
 Description=Nightshift Orange Pi 3B 2G backend
-After=network.target mosquitto.service
-Wants=mosquitto.service
+After=network.target mosquitto.service nightshift-ap.service
+Wants=mosquitto.service nightshift-ap.service
 
 [Service]
 Type=simple
