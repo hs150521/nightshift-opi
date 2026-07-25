@@ -1,6 +1,7 @@
 [Unit]
 Description=Nightshift Orange Pi 3B 2G backend
-After=network.target
+After=network.target mosquitto.service
+Wants=mosquitto.service
 
 [Service]
 Type=simple
@@ -12,6 +13,7 @@ EnvironmentFile=/opt/nightshift-opi/.env
 ExecStart=/opt/nightshift-opi/.venv/bin/python apps/backend/main.py
 Restart=on-failure
 RestartSec=5
+StateDirectory=nightshift
 
 [Install]
 WantedBy=multi-user.target
