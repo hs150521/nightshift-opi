@@ -125,23 +125,87 @@ class MqttCommandHandler:
             await self._orchestrator.resync_panel()
             return True, "ok", "panel resync triggered", {}
 
-        if envelope.command in ("task.confirm", "task.reject", "task.retry"):
-            return (
-                False,
-                "not_found",
-                "task service is not yet implemented",
-                {},
-            )
+        if envelope.command == "task.confirm":
+            return await self._handle_task_confirm(envelope)
+
+        if envelope.command == "task.reject":
+            return await self._handle_task_reject(envelope)
+
+        if envelope.command == "task.retry":
+            return await self._handle_task_retry(envelope)
 
         if envelope.command == "notice.dismiss":
-            return (
-                False,
-                "not_found",
-                "notice service is not yet implemented",
-                {},
-            )
+            return await self._handle_notice_dismiss(envelope)
 
         return False, "invalid_argument", f"unhandled command: {envelope.command}", {}
+
+    async def _handle_task_confirm(
+        self, envelope: CommandEnvelope
+    ) -> tuple[bool, str, str, dict[str, Any]]:
+        svc = self._orchestrator._confirmation_service
+        if svc is None:
+            return False, "not_ready", "services not initialized", {}
+        task_id = envelope.args.get("task_id")
+        if not isinstance(task_id, int):
+            return False, "invalid_argument", "task_id must be an integer", {}
+        from nightshift.domain.commands import OBJ_TASK
+        from nightshift.services.confirmation_service import ConfirmationError
+
+        now_ms = self._now_ms()
+        try:
+            result = await svc.confirm(OBJ_TASK, task_id, now_ms=now_ms)
+        except ConfirmationError as exc:
+            return False, "not_found", str(exc), {}
+        return True, "ok", "task confirmed", {"pending_count": result.pending_count}
+
+    async def _handle_task_reject(
+        self, envelope: CommandEnvelope
+    ) -> tuple[bool, str, str, dict[str, Any]]:
+        svc = self._orchestrator._confirmation_service
+        if svc is None:
+            return False, "not_ready", "services not initialized", {}
+        task_id = envelope.args.get("task_id")
+        if not isinstance(task_id, int):
+            return False, "invalid_argument", "task_id must be an integer", {}
+        from nightshift.domain.commands import OBJ_TASK
+        from nightshift.services.confirmation_service import ConfirmationError
+
+        now_ms = self._now_ms()
+        try:
+            result = await svc.reject(OBJ_TASK, task_id, now_ms=now_ms)
+        except ConfirmationError as exc:
+            return False, "not_found", str(exc), {}
+        return True, "ok", "task rejected", {"pending_count": result.pending_count}
+
+    async def _handle_task_retry(
+        self, envelope: CommandEnvelope
+    ) -> tuple[bool, str, str, dict[str, Any]]:
+        task_svc = self._orchestrator._task_service
+        if task_svc is None:
+            return False, "not_ready", "services not initialized", {}
+        task_id = envelope.args.get("task_id")
+        if not isinstance(task_id, int):
+            return False, "invalid_argument", "task_id must be an integer", {}
+        now_ms = self._now_ms()
+        task = await task_svc.retry(task_id, now_ms=now_ms)
+        if task is None:
+            return False, "not_found", f"task {task_id} not in failed state", {}
+        return True, "ok", "task retried", {"task_id": task.id}
+
+    async def _handle_notice_dismiss(
+        self, envelope: CommandEnvelope
+    ) -> tuple[bool, str, str, dict[str, Any]]:
+        notice_svc = self._orchestrator._notice_service
+        if notice_svc is None:
+            return False, "not_ready", "services not initialized", {}
+        notice_id = envelope.args.get("notice_id")
+        if not isinstance(notice_id, int):
+            return False, "invalid_argument", "notice_id must be an integer", {}
+        now_ms = self._now_ms()
+        notice = await notice_svc.dismiss(notice_id, now_ms=now_ms)
+        if notice is None:
+            return False, "not_found", f"notice {notice_id} not active", {}
+        return True, "ok", "notice dismissed", {"notice_id": notice.id}
 
     def _make_reply(
         self,

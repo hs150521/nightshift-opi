@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING
 
 import aiomqtt
 
-from nightshift.domain.events import ModeChanged
+from nightshift.domain.events import (
+    AttentionChanged,
+    DomainEvent,
+    ModeChanged,
+    PanelConnectivityChanged,
+    PressureChanged,
+    WorkStateChanged,
+)
 from nightshift.integrations.mqtt import schemas
 from nightshift.integrations.mqtt.command_handler import MqttCommandHandler
 from nightshift.integrations.mqtt.config import MqttConfig
@@ -80,9 +87,11 @@ class MqttClient:
             except Exception:
                 log.exception("mqtt: failed to publish state")
 
-    async def on_mode_changed(self, event: ModeChanged) -> None:
-        if self._publisher is not None:
-            try:
+    async def on_domain_event(self, event: DomainEvent) -> None:
+        if self._publisher is None:
+            return
+        try:
+            if isinstance(event, ModeChanged):
                 await self._publisher.publish_event(
                     event_type="mode.changed",
                     event_id=schemas.new_event_id(),
@@ -94,8 +103,51 @@ class MqttClient:
                         "reason": event.reason,
                     },
                 )
-            except Exception:
-                log.exception("mqtt: failed to publish event")
+            elif isinstance(event, PressureChanged):
+                p = event.pressure
+                await self._publisher.publish_event(
+                    event_type="pressure.changed",
+                    event_id=schemas.new_event_id(),
+                    revision=event.revision,
+                    occurred_at_ms=event.occurred_at_ms,
+                    data={
+                        "online": p.online,
+                        "cushion": p.cushion,
+                        "footrest": p.footrest,
+                    },
+                )
+            elif isinstance(event, WorkStateChanged):
+                await self._publisher.publish_event(
+                    event_type="work_state.changed",
+                    event_id=schemas.new_event_id(),
+                    revision=0,
+                    occurred_at_ms=0,
+                    data={
+                        "from": str(event.previous),
+                        "to": str(event.current),
+                    },
+                )
+            elif isinstance(event, AttentionChanged):
+                await self._publisher.publish_event(
+                    event_type="attention.changed",
+                    event_id=schemas.new_event_id(),
+                    revision=0,
+                    occurred_at_ms=0,
+                    data={
+                        "flags": event.flags,
+                        "confirmation_count": event.confirmation_count,
+                    },
+                )
+            elif isinstance(event, PanelConnectivityChanged):
+                await self._publisher.publish_event(
+                    event_type="panel.connectivity",
+                    event_id=schemas.new_event_id(),
+                    revision=0,
+                    occurred_at_ms=0,
+                    data={"online": event.online},
+                )
+        except Exception:
+            log.exception("mqtt: failed to publish event")
 
     async def _run_loop(self) -> None:
         backoff = _BACKOFF_BASE
