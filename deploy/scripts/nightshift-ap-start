@@ -12,6 +12,8 @@ readonly HOSTAPD_SOURCE=/etc/hostapd/nightshift-ap.conf
 readonly HOSTAPD_RUNTIME=/run/nightshift-ap/hostapd.conf
 readonly DNSMASQ_CONF=/etc/nightshift-ap/dnsmasq.conf
 readonly ROAM_RETRY_SECONDS=30
+readonly STA_WAIT_SECONDS=30
+readonly FALLBACK_CHANNEL=1
 
 HOSTAPD_PID=
 DNSMASQ_PID=
@@ -54,6 +56,8 @@ fi
 
 log "waiting for ${STA_IF} to associate on 2.4 GHz"
 LAST_ROAM_ATTEMPT=0
+STA_WAIT_DEADLINE=$((SECONDS + STA_WAIT_SECONDS))
+STA_CONNECTED=false
 while true; do
     WPA_STATUS="$(wpa_cli -i "$STA_IF" status 2>/dev/null || true)"
     WPA_STATE="$(awk -F= '$1 == "wpa_state" { print $2 }' <<<"$WPA_STATUS")"
@@ -65,6 +69,14 @@ while true; do
        [ "$STA_FREQ" -ge 2412 ] &&
        [ "$STA_FREQ" -le 2472 ] &&
        [ $(((STA_FREQ - 2407) % 5)) -eq 0 ]; then
+        STA_CONNECTED=true
+        break
+    fi
+
+    if [ "$SECONDS" -ge "$STA_WAIT_DEADLINE" ]; then
+        STA_FREQ=$((2407 + FALLBACK_CHANNEL * 5))
+        STA_IP=offline
+        log "no 2.4 GHz STA after ${STA_WAIT_SECONDS}s; starting standalone AP on channel ${FALLBACK_CHANNEL}"
         break
     fi
 
@@ -87,7 +99,11 @@ while true; do
 done
 
 STA_CHANNEL=$(((STA_FREQ - 2407) / 5))
-log "${STA_IF} is ready at ${STA_FREQ} MHz (channel ${STA_CHANNEL}), IP ${STA_IP:-pending}"
+if [ "$STA_CONNECTED" = true ]; then
+    log "${STA_IF} is ready at ${STA_FREQ} MHz (channel ${STA_CHANNEL}), IP ${STA_IP:-pending}"
+else
+    log "continuing without internet STA; local AP services remain available"
+fi
 
 if ip link show "$AP_IF" >/dev/null 2>&1; then
     if ! iw dev "$AP_IF" info | grep -Eq '^[[:space:]]*type AP$'; then
@@ -155,7 +171,7 @@ fi
 # Wait until carrier has been present for two consecutive checks before asking
 # networkd to renew DHCP. An immediate reconfigure can race the carrier drop and
 # leave wlan0 associated but without an IPv4 address until manual intervention.
-if command -v networkctl >/dev/null 2>&1; then
+if [ "$STA_CONNECTED" = true ] && command -v networkctl >/dev/null 2>&1; then
     carrier_checks=0
     carrier_stable=0
     sleep 2
@@ -173,17 +189,19 @@ if command -v networkctl >/dev/null 2>&1; then
     networkctl reconfigure "$STA_IF" 2>/dev/null || true
 fi
 
-sysctl -q -w net.ipv4.ip_forward=1
-iptables -C FORWARD -i "$AP_IF" -o "$STA_IF" -j ACCEPT 2>/dev/null ||
-    iptables -I FORWARD 1 -i "$AP_IF" -o "$STA_IF" -j ACCEPT
-iptables -C FORWARD -i "$STA_IF" -o "$AP_IF" \
-    -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null ||
-    iptables -I FORWARD 1 -i "$STA_IF" -o "$AP_IF" \
-        -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-iptables -t nat -C POSTROUTING -s "$AP_SUBNET" -o "$STA_IF" \
-    -j MASQUERADE 2>/dev/null ||
-    iptables -t nat -A POSTROUTING -s "$AP_SUBNET" -o "$STA_IF" \
-        -j MASQUERADE
+if [ "$STA_CONNECTED" = true ]; then
+    sysctl -q -w net.ipv4.ip_forward=1
+    iptables -C FORWARD -i "$AP_IF" -o "$STA_IF" -j ACCEPT 2>/dev/null ||
+        iptables -I FORWARD 1 -i "$AP_IF" -o "$STA_IF" -j ACCEPT
+    iptables -C FORWARD -i "$STA_IF" -o "$AP_IF" \
+        -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null ||
+        iptables -I FORWARD 1 -i "$STA_IF" -o "$AP_IF" \
+            -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    iptables -t nat -C POSTROUTING -s "$AP_SUBNET" -o "$STA_IF" \
+        -j MASQUERADE 2>/dev/null ||
+        iptables -t nat -A POSTROUTING -s "$AP_SUBNET" -o "$STA_IF" \
+            -j MASQUERADE
+fi
 
 log "starting dnsmasq"
 /usr/sbin/dnsmasq --keep-in-foreground \
